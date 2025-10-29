@@ -46,10 +46,10 @@ services:
     volumes:
       - ./synapse/data:/data
       - ./bridges:/bridges:ro
-    # Ports exposed only to internal network - access via Caddy
-    expose:
-      - "8008"
-      - "8448"  # Federation port
+    # Ports published to host for multi-machine deployment
+    ports:
+      - "8008:8008"
+      - "8448:8448"  # Federation port
     networks:
       - matrix-network
     depends_on:
@@ -68,9 +68,9 @@ services:
     restart: unless-stopped
     volumes:
       - ./element/config/config.json:/app/config.json:ro
-    # Accessed via Caddy
-    expose:
-      - "80"
+    # Port published to host for multi-machine deployment
+    ports:
+      - "8090:80"  # Map container port 80 to host port 8090
     networks:
       - matrix-network
     depends_on:
@@ -101,10 +101,10 @@ services:
     volumes:
       - ./mas/config:/config:ro
       - ./mas/data:/data
-    # Accessed via Caddy
-    expose:
-      - "8080"
-      - "8081"
+    # Ports published to host for multi-machine deployment
+    ports:
+      - "8080:8080"
+      - "8081:8081"
     networks:
       - matrix-network
     depends_on:
