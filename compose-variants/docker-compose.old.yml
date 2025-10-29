@@ -1,10 +1,3 @@
-# Production docker-compose file for Matrix stack
-# This configuration:
-# - Uses real domain names with Let's Encrypt SSL certificates
-# - Makes Authelia optional (use --profile authelia to enable)
-# - Includes Caddy for HTTPS termination
-# - Configures all services for production use
-
 services:
   # PostgreSQL Database
   postgres:
@@ -14,7 +7,7 @@ services:
     environment:
       POSTGRES_DB: synapse
       POSTGRES_USER: synapse
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
       POSTGRES_INITDB_ARGS: --encoding=UTF-8 --lc-collate=C --lc-ctype=C
     volumes:
       - ./postgres/data:/var/lib/postgresql/data
@@ -36,11 +29,9 @@ services:
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
     volumes:
       - ./synapse/data:/data
-      - ./bridges:/bridges:ro
     # Ports exposed only to internal network - access via Caddy
     expose:
       - "8008"
-      - "8448"  # Federation port
     networks:
       - matrix-network
     depends_on:
@@ -69,8 +60,6 @@ services:
 
   # Redis for Authelia session storage
   redis:
-    profiles:
-      - authelia  # Only started when Authelia profile is active
     image: redis:7-alpine
     container_name: matrix-redis
     restart: unless-stopped
@@ -81,6 +70,30 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Authelia SSO
+  authelia:
+    image: authelia/authelia:latest
+    container_name: matrix-authelia
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Berlin
+      AUTHELIA_SESSION_SECRET: ${AUTHELIA_SESSION_SECRET}
+      AUTHELIA_STORAGE_ENCRYPTION_KEY: ${AUTHELIA_STORAGE_ENCRYPTION_KEY}
+      AUTHELIA_JWT_SECRET: ${AUTHELIA_JWT_SECRET}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./authelia/config:/config
+    # Accessed via Caddy
+    expose:
+      - "9091"
+    networks:
+      - matrix-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   # Matrix Authentication Service (MAS)
   mas:
@@ -101,13 +114,34 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      # Note: Redis/Authelia dependency removed - works with or without Authelia
-    # Healthcheck disabled: MAS uses distroless image without curl
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
+      authelia:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Caddy Reverse Proxy (HTTPS termination)
+  caddy:
+    image: caddy:2-alpine
+    container_name: matrix-caddy
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+      - "2019:2019"  # Admin API
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/data:/data
+      - ./caddy/config:/config
+    networks:
+      - matrix-network
+    depends_on:
+      - synapse
+      - element
+      - mas
+      - authelia
 
   # mautrix-telegram Bridge
   mautrix-telegram:
@@ -147,53 +181,6 @@ services:
     depends_on:
       synapse:
         condition: service_healthy
-
-  # Authelia SSO (Optional - use profile "authelia" to enable)
-  authelia:
-    profiles:
-      - authelia  # Only started when Authelia profile is active
-    image: authelia/authelia:latest
-    container_name: matrix-authelia
-    restart: unless-stopped
-    environment:
-      TZ: ${TZ:-UTC}
-      AUTHELIA_SESSION_SECRET: ${AUTHELIA_SESSION_SECRET}
-      AUTHELIA_STORAGE_ENCRYPTION_KEY: ${AUTHELIA_STORAGE_ENCRYPTION_KEY}
-      AUTHELIA_JWT_SECRET: ${AUTHELIA_JWT_SECRET}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - ./authelia/config:/config
-    # Accessed via Caddy
-    expose:
-      - "9091"
-    networks:
-      - matrix-network
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  # Caddy Reverse Proxy (HTTPS termination with Let's Encrypt)
-  caddy:
-    image: caddy:2-alpine
-    container_name: matrix-caddy
-    restart: unless-stopped
-    ports:
-      - "443:443"
-      - "80:80"
-      - "2019:2019"  # Admin API
-    volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./caddy/data:/data
-      - ./caddy/config:/config
-    networks:
-      - matrix-network
-    depends_on:
-      - synapse
-      - element
-      - mas
-      # Note: Authelia dependency removed - works with or without Authelia
 
 networks:
   matrix-network:

@@ -87,11 +87,14 @@ See [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) for:
 
 **Deploy command:**
 ```bash
-# With Authelia
-docker compose -f docker-compose.production.yml --profile authelia up -d
+# Multi-machine (default) - Matrix server only, Caddy/Authelia on separate machines
+docker compose up -d
 
-# Without Authelia
-docker compose -f docker-compose.production.yml up -d
+# Single-machine with Authelia - Everything on one server
+docker compose --profile single-machine --profile authelia up -d
+
+# Single-machine without Authelia
+docker compose --profile single-machine up -d
 ```
 
 ## Authentication Options

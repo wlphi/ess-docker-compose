@@ -8,6 +8,7 @@ This document provides configuration snippets for deploying Matrix stack across 
 ✅ **Authelia has its own reverse proxy on Machine 2**
 ✅ **MAS connects to Authelia via HTTPS (not internal port 9091)**
 ✅ **DNS points authelia.example.com directly to Machine 2**
+✅ **docker-compose.yml defaults to multi-machine mode (no Caddy/Authelia containers)**
 
 ## Architecture
 
@@ -670,14 +671,20 @@ curl https://auth.example.com/.well-known/openid-configuration
 # On Matrix server
 cd /path/to/matrix-docker-compose
 
-# Edit docker-compose.production.yml to remove Caddy and Authelia services
-# (They're running on separate machines)
-
-# Start Matrix services
-docker compose -f docker-compose.production.yml up -d
+# Start Matrix services ONLY (no Caddy, no Authelia)
+# Multi-machine mode (default) - only starts Synapse, MAS, Element, PostgreSQL
+docker compose up -d
 
 # Check services
-docker compose -f docker-compose.production.yml ps
+docker compose ps
+
+# You should see ONLY these services running:
+# - matrix-postgres
+# - matrix-synapse
+# - matrix-mas
+# - matrix-element
+
+# Caddy and Authelia are NOT started (they run on separate machines)
 ```
 
 ### Phase 5: Verify Everything Works
@@ -799,3 +806,43 @@ If any fail:
 - Verify firewall allows port 443
 - Check reverse proxy configs
 - Review Let's Encrypt certificate issuance in logs
+
+---
+
+## Docker Compose Deployment Modes
+
+The production compose file supports multiple deployment architectures:
+
+### Multi-Machine Mode (Default) ← YOU WANT THIS
+
+```bash
+docker compose up -d
+```
+
+**What starts:**
+- ✅ PostgreSQL
+- ✅ Synapse (Matrix homeserver)
+- ✅ MAS (Authentication service)
+- ✅ Element (Web client)
+
+**What does NOT start:**
+- ❌ Caddy (runs separately on Machine 1)
+- ❌ Authelia (runs separately on Machine 2)
+- ❌ Redis (only needed if Authelia is in Docker)
+
+This is the default mode - no profiles needed!
+
+### Single-Machine Mode
+
+For all-in-one deployments where everything runs on one server:
+
+```bash
+# With Authelia
+docker compose --profile single-machine --profile authelia up -d
+
+# Without Authelia
+docker compose --profile single-machine up -d
+```
+
+**What starts:** Everything including Caddy in Docker with Let's Encrypt
+
