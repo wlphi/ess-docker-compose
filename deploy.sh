@@ -544,13 +544,21 @@ echo "$MAS_SIGNING_KEY" | sed 's/^/        /' >> mas/config/config.yaml
 # Continue with the rest of the MAS config - conditional based on Authelia usage
 if [[ "$USE_AUTHELIA" == true ]]; then
     # With Authelia: Use upstream OAuth2 provider
+    # Set discovery URL based on deployment mode
+    if [[ "$DEPLOYMENT_MODE" == "production" ]]; then
+        AUTHELIA_DISCOVERY_URL="https://${AUTHELIA_DOMAIN}/.well-known/openid-configuration"
+    else
+        # Local: Use internal HTTP to avoid self-signed cert issues between containers
+        AUTHELIA_DISCOVERY_URL="http://authelia:9091/.well-known/openid-configuration"
+    fi
+
     cat >> mas/config/config.yaml << EOF
 
 upstream_oauth2:
   providers:
     - id: '01HQW90Z35CMXFJWQPHC3BGZGQ'
       issuer: 'https://${AUTHELIA_DOMAIN}'
-      discovery_url: 'http://authelia:9091/.well-known/openid-configuration'  # Internal HTTP for faster access
+      discovery_url: '${AUTHELIA_DISCOVERY_URL}'
       client_id: 'mas-client'
       client_secret: '${CLIENT_SECRET_PLAIN}'
       scope: 'openid profile email offline_access'
