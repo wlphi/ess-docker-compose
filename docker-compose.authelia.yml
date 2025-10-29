@@ -1,0 +1,77 @@
+# Standalone Authelia deployment for production
+# Deploy this on a separate machine from Matrix stack for security
+# This machine needs:
+# - Network access to/from Caddy machine (for SSO redirects)
+# - Network access to PostgreSQL on Matrix machine (or local DB)
+# - Redis for session storage
+#
+# Configuration:
+# - Update authelia/config/configuration.yml with production domains
+# - Configure PostgreSQL connection (local or remote)
+# - Set up proper firewall rules
+
+services:
+  # Redis for Authelia session storage
+  redis:
+    image: redis:7-alpine
+    container_name: authelia-redis
+    restart: unless-stopped
+    networks:
+      - authelia-network
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for Authelia (optional - can use remote DB on Matrix machine)
+  postgres:
+    image: postgres:16-alpine
+    container_name: authelia-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: authelia
+      POSTGRES_USER: authelia
+      POSTGRES_PASSWORD: ${AUTHELIA_POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - authelia-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authelia"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Authelia SSO
+  authelia:
+    image: authelia/authelia:latest
+    container_name: authelia-sso
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      AUTHELIA_SESSION_SECRET: ${AUTHELIA_SESSION_SECRET}
+      AUTHELIA_STORAGE_ENCRYPTION_KEY: ${AUTHELIA_STORAGE_ENCRYPTION_KEY}
+      AUTHELIA_JWT_SECRET: ${AUTHELIA_JWT_SECRET}
+      POSTGRES_PASSWORD: ${AUTHELIA_POSTGRES_PASSWORD}
+    volumes:
+      - ./authelia/config:/config
+    ports:
+      - "9091:9091"  # Exposed for Caddy reverse proxy
+    networks:
+      - authelia-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+networks:
+  authelia-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  postgres-data:

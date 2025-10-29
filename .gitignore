@@ -1,0 +1,54 @@
+# Environment and secrets
+.env
+*.pem
+*.key
+*-signing.key
+authelia_private.pem
+mas-signing.key
+
+# Generated configuration files (contain secrets)
+authelia/config/configuration.yml
+authelia/config/users_database.yml
+authelia/config/notification.txt
+authelia/config/*.backup
+mas/config/config.yaml
+element/config/config.json
+synapse/data/homeserver.yaml
+synapse/data/homeserver.yaml.bak
+synapse/data/*.signing.key
+synapse/data/*.log.config
+
+# Data directories
+postgres/data/
+synapse/data/
+mas/data/
+mas/certs/
+caddy/data/
+caddy/config/
+bridges/*/config/
+bridges/*/data/
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
+
+# Backup files
+*.bak
+*~
+backups/
+
+# Production deployment configs (contain server IPs and secrets)
+caddy-server/
+authelia-server/
+caddy/Caddyfile.production
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

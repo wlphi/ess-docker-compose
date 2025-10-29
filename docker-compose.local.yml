@@ -1,0 +1,196 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: matrix-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: synapse
+      POSTGRES_USER: synapse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_INITDB_ARGS: --encoding=UTF-8 --lc-collate=C --lc-ctype=C
+    volumes:
+      - ./postgres/data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    networks:
+      - matrix-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synapse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Matrix Synapse Server
+  synapse:
+    image: matrixdotorg/synapse:latest
+    container_name: matrix-synapse
+    restart: unless-stopped
+    environment:
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+    volumes:
+      - ./synapse/data:/data
+    # Ports exposed only to internal network - access via Caddy
+    expose:
+      - "8008"
+    networks:
+      - matrix-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Element Web Client
+  element:
+    image: vectorim/element-web:latest
+    container_name: matrix-element
+    restart: unless-stopped
+    volumes:
+      - ./element/config/config.json:/app/config.json:ro
+    # Accessed via Caddy
+    expose:
+      - "80"
+    networks:
+      - matrix-network
+    depends_on:
+      - synapse
+
+  # Redis for Authelia session storage
+  redis:
+    image: redis:7-alpine
+    container_name: matrix-redis
+    restart: unless-stopped
+    networks:
+      - matrix-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Authelia SSO
+  authelia:
+    image: authelia/authelia:latest
+    container_name: matrix-authelia
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Berlin
+      AUTHELIA_SESSION_SECRET: ${AUTHELIA_SESSION_SECRET}
+      AUTHELIA_STORAGE_ENCRYPTION_KEY: ${AUTHELIA_STORAGE_ENCRYPTION_KEY}
+      AUTHELIA_JWT_SECRET: ${AUTHELIA_JWT_SECRET}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./authelia/config:/config
+    # Accessed via Caddy
+    expose:
+      - "9091"
+    networks:
+      - matrix-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Matrix Authentication Service (MAS)
+  mas:
+    image: ghcr.io/element-hq/matrix-authentication-service:latest
+    container_name: matrix-mas
+    restart: unless-stopped
+    environment:
+      MAS_CONFIG: /config/config.yaml
+      SSL_CERT_FILE: /certs/caddy-ca.crt
+    volumes:
+      - ./mas/config:/config:ro
+      - ./mas/data:/data
+      - ./mas/certs:/certs:ro
+    # Accessed via Caddy
+    expose:
+      - "8080"
+      - "8081"
+    networks:
+      - matrix-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      authelia:
+        condition: service_started
+    extra_hosts:
+      - "authelia.example.test:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Caddy Reverse Proxy (HTTPS termination)
+  caddy:
+    image: caddy:2-alpine
+    container_name: matrix-caddy
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+      - "2019:2019"  # Admin API
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/data:/data
+      - ./caddy/config:/config
+    networks:
+      - matrix-network
+    depends_on:
+      - synapse
+      - element
+      - mas
+      - authelia
+
+  # mautrix-telegram Bridge
+  mautrix-telegram:
+    image: dock.mau.dev/mautrix/telegram:latest
+    container_name: matrix-bridge-telegram
+    restart: unless-stopped
+    volumes:
+      - ./bridges/telegram/config:/data
+    networks:
+      - matrix-network
+    depends_on:
+      synapse:
+        condition: service_healthy
+
+  # mautrix-whatsapp Bridge
+  mautrix-whatsapp:
+    image: dock.mau.dev/mautrix/whatsapp:latest
+    container_name: matrix-bridge-whatsapp
+    restart: unless-stopped
+    volumes:
+      - ./bridges/whatsapp/config:/data
+    networks:
+      - matrix-network
+    depends_on:
+      synapse:
+        condition: service_healthy
+
+  # mautrix-signal Bridge
+  mautrix-signal:
+    image: dock.mau.dev/mautrix/signal:latest
+    container_name: matrix-bridge-signal
+    restart: unless-stopped
+    volumes:
+      - ./bridges/signal/config:/data
+    networks:
+      - matrix-network
+    depends_on:
+      synapse:
+        condition: service_healthy
+
+networks:
+  matrix-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  synapse-data:
+  mas-data:

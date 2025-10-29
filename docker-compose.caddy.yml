@@ -1,0 +1,35 @@
+# Standalone Caddy deployment for production
+# Deploy this on your SSL termination/reverse proxy machine
+# This machine should have:
+# - Public IP with ports 80/443 accessible
+# - DNS A records pointing to this machine
+# - Network access to Matrix server machine
+#
+# Configuration:
+# - Update caddy/Caddyfile.production with your domains and backend IPs
+# - Ensure proper firewall rules between this and Matrix server
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"      # HTTP (redirects to HTTPS)
+      - "443:443"    # HTTPS
+      - "443:443/udp"  # HTTP/3
+      - "2019:2019"  # Admin API (restrict access!)
+    volumes:
+      - ./caddy/Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - ./caddy/data:/data
+      - ./caddy/config:/config
+    networks:
+      - caddy-network
+    environment:
+      - ACME_AGREE=true
+    # Optional: restrict admin API to localhost only
+    # command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile --admin localhost:2019
+
+networks:
+  caddy-network:
+    driver: bridge
