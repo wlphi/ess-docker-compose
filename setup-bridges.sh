@@ -7,15 +7,15 @@ source .env
 echo "=== Setting up Mautrix Bridges ==="
 
 # Stop bridges
-docker compose -f docker-compose.local.yml stop mautrix-telegram mautrix-whatsapp mautrix-signal 2>/dev/null || true
+docker compose stop mautrix-telegram mautrix-whatsapp mautrix-signal 2>/dev/null || true
 
 # Clean old configs
 sudo rm -rf bridges/telegram/config/* bridges/whatsapp/config/* bridges/signal/config/*
 
 # Generate configs by starting briefly
-docker compose -f docker-compose.local.yml up -d mautrix-telegram && sleep 15 && docker compose -f docker-compose.local.yml stop mautrix-telegram
-docker compose -f docker-compose.local.yml up -d mautrix-whatsapp && sleep 15 && docker compose -f docker-compose.local.yml stop mautrix-whatsapp
-docker compose -f docker-compose.local.yml up -d mautrix-signal && sleep 15 && docker compose -f docker-compose.local.yml stop mautrix-signal
+docker compose up -d mautrix-telegram && sleep 15 && docker compose stop mautrix-telegram
+docker compose up -d mautrix-whatsapp && sleep 15 && docker compose stop mautrix-whatsapp
+docker compose up -d mautrix-signal && sleep 15 && docker compose stop mautrix-signal
 
 # Configure Telegram
 sudo sed -i "s|address: https://example.com|address: http://synapse:8008|" bridges/telegram/config/config.yaml
@@ -57,11 +57,11 @@ echo "  - /bridges/whatsapp/config/registration.yaml" | sudo tee -a synapse/data
 echo "  - /bridges/signal/config/registration.yaml" | sudo tee -a synapse/data/homeserver.yaml > /dev/null
 
 # Restart Synapse
-docker compose -f docker-compose.local.yml restart synapse && sleep 10
+docker compose restart synapse && sleep 10
 
 # Start bridges
-docker compose -f docker-compose.local.yml up -d mautrix-telegram mautrix-whatsapp mautrix-signal
+docker compose up -d mautrix-telegram mautrix-whatsapp mautrix-signal
 sleep 15
 
 echo "=== Bridge setup complete ==="
-docker compose -f docker-compose.local.yml ps | grep bridge
+docker compose ps | grep bridge
