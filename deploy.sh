@@ -68,11 +68,12 @@ fi
 echo ""
 
 # ============================================================================
-# DATA DIRECTORY CHECK
+# DATA DIRECTORY CHECK & AUTOMATIC CLEANUP
 # ============================================================================
 echo -e "${YELLOW}Checking for existing data directories...${NC}"
 
 EXISTING_DATA=""
+PRESERVED_CLIENT_SECRET=""  # Will store existing CLIENT_SECRET to preserve Authelia integration
 [[ -d "postgres/data" ]] && [[ "$(ls -A postgres/data 2>/dev/null)" ]] && EXISTING_DATA="${EXISTING_DATA}postgres/data "
 [[ -d "synapse/data" ]] && [[ -f "synapse/data/homeserver.yaml" ]] && EXISTING_DATA="${EXISTING_DATA}synapse/data "
 [[ -d "mas/data" ]] && [[ "$(ls -A mas/data 2>/dev/null)" ]] && EXISTING_DATA="${EXISTING_DATA}mas/data "
@@ -83,41 +84,25 @@ if [[ -n "$EXISTING_DATA" ]]; then
         echo -e "  • $dir"
     done
     echo ""
-    echo -e "${YELLOW}These directories contain data from a previous deployment.${NC}"
-    echo -e "${YELLOW}If you continue, services may fail to start due to:${NC}"
-    echo -e "  • Mismatched passwords (old DB password != new .env password)"
-    echo -e "  • Stale configurations"
-    echo -e "  • Database schema conflicts"
+    echo -e "${YELLOW}Automatically cleaning to prevent password mismatch issues...${NC}"
+    echo -e "${YELLOW}(Old database passwords won't match new deployment)${NC}"
     echo ""
-    echo -e "${CYAN}Recommended actions:${NC}"
-    echo -e "  1) ${GREEN}Clean slate${NC} - Delete all data and start fresh (recommended for testing)"
-    echo -e "  2) ${YELLOW}Keep data${NC}   - Continue with existing data (may cause errors)"
-    echo -e "  3) ${RED}Abort${NC}       - Exit and manually backup/clean data"
-    echo ""
-    read -p "Choose [1/2/3]: " DATA_CHOICE
 
-    case "$DATA_CHOICE" in
-        1)
-            echo -e "${YELLOW}Cleaning data directories...${NC}"
-            sudo rm -rf postgres/data synapse/data mas/data mas/certs caddy/data caddy/config
-            mkdir -p postgres/data synapse/data mas/data mas/certs caddy/data caddy/config
-            echo -e "${GREEN}✓${NC} Data directories cleaned"
-            echo ""
-            ;;
-        2)
-            echo -e "${YELLOW}⚠ Continuing with existing data...${NC}"
-            echo -e "${RED}Note: Deployment may fail due to password/config mismatches!${NC}"
-            echo ""
-            ;;
-        3)
-            echo -e "${BLUE}Exiting. Please backup or clean your data manually.${NC}"
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}Invalid choice. Exiting.${NC}"
-            exit 1
-            ;;
-    esac
+    # Extract CLIENT_SECRET before cleanup to preserve Authelia integration
+    if [[ -f "mas/config/config.yaml" ]]; then
+        PRESERVED_CLIENT_SECRET=$(grep "client_secret:" mas/config/config.yaml | head -1 | sed "s/.*client_secret: '\(.*\)'/\1/")
+        if [[ -n "$PRESERVED_CLIENT_SECRET" ]]; then
+            echo -e "${GREEN}✓${NC} Found existing Authelia client_secret - will preserve it"
+        fi
+    fi
+
+    # Automatic cleanup to prevent Issue #9 (PostgreSQL password mismatch)
+    sudo rm -rf postgres/data synapse/data mas/data mas/certs caddy/data caddy/config bridges/*/config
+    mkdir -p postgres/data synapse/data mas/data mas/certs caddy/data caddy/config
+    mkdir -p bridges/telegram/config bridges/whatsapp/config bridges/signal/config
+
+    echo -e "${GREEN}✓${NC} Data directories cleaned - starting fresh deployment"
+    echo ""
 else
     echo -e "${GREEN}✓${NC} No existing data found - starting with clean slate"
     echo ""
@@ -232,21 +217,34 @@ else
     AUTHELIA_SUBDOMAIN=${AUTHELIA_SUBDOMAIN:-authelia}
     AUTHELIA_DOMAIN="${AUTHELIA_SUBDOMAIN}.${DOMAIN_BASE}"
 
-    # Set placeholder values for multi-machine deployment
-    # (These will be used in generated Caddyfile template - update manually on Caddy server)
-    MATRIX_SERVER_IP="10.0.1.10"
-    AUTHELIA_SERVER_IP="10.0.1.20"
-    LETSENCRYPT_EMAIL="admin@${DOMAIN_BASE}"
+    echo ""
+    echo -e "${CYAN}Backend Server Addresses (for Caddyfile):${NC}"
+    echo -e "  ${YELLOW}Enter IP addresses or hostnames${NC}"
+    echo ""
+
+    # Matrix server address (IP or hostname)
+    read -p "Matrix server address (IP or hostname): " MATRIX_SERVER_IP
+    MATRIX_SERVER_IP=${MATRIX_SERVER_IP:-10.0.1.10}
+
+    # Authelia server address (IP or hostname)
+    read -p "Authelia server address (IP or hostname): " AUTHELIA_SERVER_IP
+    AUTHELIA_SERVER_IP=${AUTHELIA_SERVER_IP:-10.0.1.20}
+
+    # Email for Let's Encrypt (used in generated Caddyfile template)
+    read -p "Email for Let's Encrypt [default: admin@${DOMAIN_BASE}]: " LETSENCRYPT_EMAIL
+    LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL:-admin@${DOMAIN_BASE}}
 
     echo ""
     echo -e "${GREEN}✓${NC} Configuration Summary:"
-    echo -e "  Base Domain:     ${DOMAIN_BASE}"
-    echo -e "  Matrix:          https://${MATRIX_DOMAIN}"
-    echo -e "  Element:         https://${ELEMENT_DOMAIN}"
-    echo -e "  MAS:             https://${AUTH_DOMAIN}"
-    echo -e "  Authelia:        https://${AUTHELIA_DOMAIN}"
+    echo -e "  Base Domain:       ${DOMAIN_BASE}"
+    echo -e "  Matrix:            https://${MATRIX_DOMAIN}"
+    echo -e "  Element:           https://${ELEMENT_DOMAIN}"
+    echo -e "  MAS:               https://${AUTH_DOMAIN}"
+    echo -e "  Authelia:          https://${AUTHELIA_DOMAIN}"
+    echo -e "  Matrix Backend:    ${MATRIX_SERVER_IP}"
+    echo -e "  Authelia Backend:  ${AUTHELIA_SERVER_IP}"
     echo ""
-    print_info "Note: For multi-machine deployment, use MULTI_MACHINE_CONFIG_SNIPPETS.md"
+    print_info "Note: Generated Caddyfile will use these backend addresses"
     print_info "      Copy generated configs from authelia/config/ to your Authelia server"
     echo ""
 fi
@@ -327,8 +325,8 @@ EOF
 if [[ "$DEPLOYMENT_MODE" == "production" ]]; then
     cat >> .env << EOF
 
-# Production Configuration (Placeholder values for multi-machine deployment)
-# For multi-machine: Update these on your Caddy server's Caddyfile
+# Production Configuration (Backend addresses for Caddyfile generation)
+# These are used in the generated caddy/Caddyfile.production template
 MATRIX_SERVER_IP=${MATRIX_SERVER_IP}
 AUTHELIA_SERVER_IP=${AUTHELIA_SERVER_IP}
 LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
@@ -347,12 +345,19 @@ if [[ "$USE_AUTHELIA" == true ]]; then
     print_status "Authelia RSA key generated"
     echo ""
 
-    # Step 5: Generate client secret for Authelia
-    echo -e "${BLUE}[5/13] Generating Authelia client secret...${NC}"
-    CLIENT_SECRET_PLAIN=$(generate_secret)
-    # Generate hash for Authelia config
-    CLIENT_SECRET_HASH=$($DOCKER_CMD run --rm authelia/authelia:latest authelia crypto hash generate pbkdf2 --variant sha512 --password "${CLIENT_SECRET_PLAIN}" 2>/dev/null | grep "Digest:" | awk '{print $2}')
-    print_status "Client secret generated"
+    # Step 5: Generate or reuse client secret for Authelia
+    echo -e "${BLUE}[5/13] Configuring Authelia client secret...${NC}"
+    if [[ -n "$PRESERVED_CLIENT_SECRET" ]]; then
+        # Reuse preserved secret to maintain Authelia integration
+        CLIENT_SECRET_PLAIN="$PRESERVED_CLIENT_SECRET"
+        CLIENT_SECRET_HASH=$($DOCKER_CMD run --rm authelia/authelia:latest authelia crypto hash generate pbkdf2 --variant sha512 --password "${CLIENT_SECRET_PLAIN}" 2>/dev/null | grep "Digest:" | awk '{print $2}')
+        print_status "Reusing preserved client secret (Authelia integration maintained)"
+    else
+        # Generate new secret
+        CLIENT_SECRET_PLAIN=$(generate_secret)
+        CLIENT_SECRET_HASH=$($DOCKER_CMD run --rm authelia/authelia:latest authelia crypto hash generate pbkdf2 --variant sha512 --password "${CLIENT_SECRET_PLAIN}" 2>/dev/null | grep "Digest:" | awk '{print $2}')
+        print_status "Client secret generated"
+    fi
     echo ""
 
     # Step 6: Generate password hash for default admin user
