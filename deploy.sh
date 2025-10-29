@@ -275,6 +275,18 @@ fi
 print_status "Prerequisites OK"
 echo ""
 
+# Step 1.5: Create directory structure
+echo -e "${BLUE}[1.5/13] Creating directory structure...${NC}"
+mkdir -p authelia/config
+mkdir -p mas/config mas/data mas/certs
+mkdir -p element/config
+mkdir -p synapse/data
+mkdir -p postgres/data
+mkdir -p caddy/data caddy/config
+mkdir -p bridges/{telegram,whatsapp,signal}/config
+print_status "Directory structure created"
+echo ""
+
 # Step 2: Generate secure secrets
 echo -e "${BLUE}[2/12] Generating secure secrets...${NC}"
 POSTGRES_PASSWORD=$(generate_secret)
