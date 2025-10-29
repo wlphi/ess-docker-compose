@@ -27,8 +27,11 @@ services:
     restart: unless-stopped
     environment:
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+      SSL_CERT_FILE: /certs/caddy-ca.crt
     volumes:
       - ./synapse/data:/data
+      - ./mas/certs:/certs:ro
+      - ./bridges:/bridges:ro
     # Ports exposed only to internal network - access via Caddy
     expose:
       - "8008"
@@ -37,6 +40,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    extra_hosts:
+      - "auth.example.test:host-gateway"
+      - "matrix.example.test:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
       interval: 30s
@@ -60,6 +66,8 @@ services:
 
   # Redis for Authelia session storage
   redis:
+    profiles:
+      - authelia  # Only started when Authelia profile is active
     image: redis:7-alpine
     container_name: matrix-redis
     restart: unless-stopped
@@ -71,8 +79,10 @@ services:
       timeout: 5s
       retries: 5
 
-  # Authelia SSO
+  # Authelia SSO (Optional - use profile "authelia" to enable)
   authelia:
+    profiles:
+      - authelia  # Only started when Authelia profile is active
     image: authelia/authelia:latest
     container_name: matrix-authelia
     restart: unless-stopped
@@ -116,15 +126,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      authelia:
-        condition: service_started
+      # Note: Authelia dependency removed - works with or without Authelia
     extra_hosts:
-      - "authelia.example.test:host-gateway"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - "authelia.example.test:host-gateway"  # Harmless if Authelia not running
+    # Healthcheck disabled: MAS uses distroless image without curl
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
 
   # Caddy Reverse Proxy (HTTPS termination)
   caddy:
@@ -145,7 +155,7 @@ services:
       - synapse
       - element
       - mas
-      - authelia
+      # Note: Authelia dependency removed - works with or without Authelia
 
   # mautrix-telegram Bridge
   mautrix-telegram:

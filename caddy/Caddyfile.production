@@ -1,0 +1,255 @@
+# Production Caddyfile for Matrix Stack
+# Uses Let's Encrypt for automatic HTTPS certificates
+# IMPORTANT: Replace {$DOMAIN} with your actual domain during deployment
+
+{
+    # Production: automatic HTTPS with Let's Encrypt
+    # local_certs is NOT used in production
+    
+    # Enable admin API for troubleshooting
+    admin 0.0.0.0:2019
+    
+    # Email for Let's Encrypt notifications (set via environment)
+    email {$ACME_EMAIL}
+}
+
+# =========================
+# Matrix Homeserver (Synapse)
+# =========================
+matrix.{$DOMAIN}:443 {
+    # Automatic HTTPS with Let's Encrypt
+    # No tls directive needed - Caddy handles it automatically
+
+    # Well-known client endpoint
+    @wk path /.well-known/matrix/client
+    handle @wk {
+        header Content-Type application/json
+        respond `{"m.homeserver":{"base_url":"https://matrix.{$DOMAIN}"},"m.authentication":{"issuer":"https://auth.{$DOMAIN}/"}}` 200
+    }
+
+    # Well-known server endpoint (federation)
+    @wk_server path /.well-known/matrix/server
+    handle @wk_server {
+        header Content-Type application/json
+        respond `{"m.server":"matrix.{$DOMAIN}:443"}` 200
+    }
+
+    # Client versions endpoint with CORS
+    @versions path /_matrix/client/versions
+    handle @versions {
+        header Access-Control-Allow-Origin "*"
+        header Access-Control-Allow-Methods "GET, OPTIONS"
+        header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
+        header Vary "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+        reverse_proxy synapse:8008 {
+            header_down -Access-Control-Allow-Origin
+            header_down -Access-Control-Allow-Methods
+            header_down -Access-Control-Allow-Headers
+            header_down -Vary
+        }
+    }
+
+    # CORS preflight for auth metadata
+    @auth_preflight {
+        method OPTIONS
+        path /_matrix/client/unstable/org.matrix.msc2965/auth_metadata
+    }
+    handle @auth_preflight {
+        header Access-Control-Allow-Origin "*"
+        header Access-Control-Allow-Methods "GET, OPTIONS"
+        header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
+        header Access-Control-Max-Age "86400"
+        respond 204
+    }
+
+    # CORS preflight for all Matrix API
+    @preflight {
+        method OPTIONS
+        path_regexp matrix ^/_matrix/.*$
+    }
+    handle @preflight {
+        header Access-Control-Allow-Origin "*"
+        header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+        header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
+        header Access-Control-Max-Age "86400"
+        respond 204
+    }
+
+    # MAS compat endpoints (login/logout/refresh) with CORS
+    @compat path \
+        /_matrix/client/v3/login* \
+        /_matrix/client/v3/logout* \
+        /_matrix/client/v3/refresh* \
+        /_matrix/client/r0/login* \
+        /_matrix/client/r0/logout* \
+        /_matrix/client/r0/refresh*
+    handle @compat {
+        header Access-Control-Allow-Origin "*"
+        header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+        header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
+        header Vary "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+        reverse_proxy mas:8080 {
+            header_down -Access-Control-Allow-Origin
+            header_down -Access-Control-Allow-Methods
+            header_down -Access-Control-Allow-Headers
+            header_down -Vary
+        }
+    }
+
+    # Everything else under /_matrix → Synapse with CORS
+    @matrix_rest path_regexp matrix ^/_matrix/.*$
+    handle @matrix_rest {
+        header Access-Control-Allow-Origin "*"
+        header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+        header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
+        header Vary "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+        reverse_proxy synapse:8008 {
+            header_down -Access-Control-Allow-Origin
+            header_down -Access-Control-Allow-Methods
+            header_down -Access-Control-Allow-Headers
+            header_down -Vary
+        }
+    }
+
+    # Federation endpoint (port 8448)
+    # In production, this should be accessible on port 8448 OR via .well-known
+    handle /_matrix/federation/* {
+        reverse_proxy synapse:8008
+    }
+
+    # Default: everything else → Synapse
+    handle {
+        reverse_proxy synapse:8008
+    }
+}
+
+# =========================
+# Matrix Authentication Service (MAS)
+# =========================
+auth.{$DOMAIN}:443 {
+    # Automatic HTTPS with Let's Encrypt
+
+    # OIDC Discovery
+    @disco path /.well-known/openid-configuration
+    handle @disco {
+        header ?Access-Control-Allow-Origin "*"
+        header ?Access-Control-Allow-Methods "GET, OPTIONS"
+        header ?Access-Control-Allow-Headers "*"
+        reverse_proxy mas:8080
+    }
+
+    # Dynamic Client Registration: CORS preflight
+    @reg_opts {
+        method OPTIONS
+        path /oauth2/registration
+    }
+    handle @reg_opts {
+        header ?Access-Control-Allow-Origin "*"
+        header ?Access-Control-Allow-Methods "POST, OPTIONS"
+        header ?Access-Control-Allow-Headers "*"
+        respond 204
+    }
+
+    # Dynamic Client Registration (POST)
+    @reg path /oauth2/registration
+    route @reg {
+        header ?Access-Control-Allow-Origin "*"
+        header ?Access-Control-Allow-Methods "POST, OPTIONS"
+        header ?Access-Control-Allow-Headers "*"
+        reverse_proxy mas:8080
+    }
+
+    # JWKS preflight
+    @jwks_opts {
+        method OPTIONS
+        path /oauth2/keys.json
+    }
+    handle @jwks_opts {
+        header ?Access-Control-Allow-Origin "*"
+        header ?Access-Control-Allow-Methods "GET, OPTIONS"
+        header ?Access-Control-Allow-Headers "*"
+        respond 204
+    }
+
+    # Map keys.json → /oauth2/jwks (MAS naming)
+    @jwksjson path /oauth2/keys.json
+    route @jwksjson {
+        header ?Access-Control-Allow-Origin "*"
+        header ?Access-Control-Allow-Methods "GET, OPTIONS"
+        header ?Access-Control-Allow-Headers "*"
+        uri replace /oauth2/keys.json /oauth2/jwks
+        reverse_proxy mas:8080
+    }
+
+    # Generic OAuth2 endpoints
+    @oauth path /oauth2/*
+    route @oauth {
+        header ?Access-Control-Allow-Origin "*"
+        header ?Access-Control-Allow-Methods "GET, OPTIONS, POST"
+        header ?Access-Control-Allow-Headers "*"
+        reverse_proxy mas:8080
+    }
+
+    # Account portal
+    handle_path /account/* {
+        reverse_proxy mas:8080
+    }
+
+    # Authelia endpoints (proxy to authelia if using Authelia profile)
+    handle_path /authelia/* {
+        reverse_proxy authelia:9091
+    }
+
+    # Fallback: everything else to MAS
+    handle {
+        reverse_proxy mas:8080
+    }
+
+    # Add CORS on error responses
+    handle_errors {
+        header ?Access-Control-Allow-Origin "*"
+        header ?Access-Control-Allow-Headers "*"
+        header ?Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+    }
+}
+
+# =========================
+# Authelia SSO (Optional)
+# =========================
+authelia.{$DOMAIN}:443 {
+    # Automatic HTTPS with Let's Encrypt
+    reverse_proxy authelia:9091
+}
+
+# =========================
+# Element Web Client
+# =========================
+element.{$DOMAIN}:443 {
+    # Automatic HTTPS with Let's Encrypt
+
+    # Serve config.json with proper settings
+    @cfg path /config.json
+    handle @cfg {
+        header Content-Type application/json
+        header Cache-Control no-store
+        respond `{
+            "default_server_config": {
+                "m.homeserver": {
+                    "base_url": "https://matrix.{$DOMAIN}",
+                    "server_name": "matrix.{$DOMAIN}"
+                }
+            },
+            "default_server_name": "matrix.{$DOMAIN}",
+            "disable_custom_urls": false,
+            "disable_guests": true,
+            "features": {
+                "feature_oidc_aware_navigation": true
+            }
+        }` 200
+    }
+
+    # Everything else to Element container
+    handle {
+        reverse_proxy element:80
+    }
+}

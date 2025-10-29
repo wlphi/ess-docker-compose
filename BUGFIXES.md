@@ -11,6 +11,7 @@ This document captures all the critical issues encountered during deployment and
 6. [Claims Template Compatibility](#6-claims-template-compatibility)
 7. [MAS Database Caching](#7-mas-database-caching)
 8. [MAS Discovery URL for Internal Communication](#8-mas-discovery-url-for-internal-communication)
+9. [PostgreSQL Data Persistence Across Deployments](#9-postgresql-data-persistence-across-deployments)
 
 ---
 
@@ -364,6 +365,233 @@ upstream_oauth2:
 
 ### Why Not Documented
 The MAS documentation mentions `discovery_url` but doesn't emphasize its use for internal communication or bypassing SSL issues in development.
+
+---
+
+## 9. PostgreSQL Data Persistence Across Deployments
+
+### Severity
+**CRITICAL** - Causes complete deployment failure
+
+### Problem
+PostgreSQL data directories persist between deployments, even after cleanup attempts. When you re-run `deploy.sh`, it generates NEW passwords in `.env`, but PostgreSQL continues using the OLD password from when the data directory was first initialized. This causes authentication failures for all services (MAS, Synapse, Authelia).
+
+**Symptoms:**
+```
+Error: could not connect to the database
+Caused by:
+    0: error returned from database: password authentication failed for user "synapse"
+```
+
+### Root Cause
+1. PostgreSQL only initializes the database on first run (when `postgres/data` is empty)
+2. Once initialized, PostgreSQL ignores the `POSTGRES_PASSWORD` environment variable
+3. User passwords are stored in PostgreSQL's internal authentication system
+4. Even if you delete `.env` and configs, the `postgres/data` directory may survive
+5. New deployment generates new passwords, but PostgreSQL still expects old passwords
+
+### Detection
+Check the timestamps:
+```bash
+# Check when PostgreSQL data was created
+ls -la postgres/data/
+
+# Check when current .env was generated
+head -2 .env
+
+# If postgres/data is OLDER than .env, you have a mismatch!
+```
+
+### Solution 1: Clean Slate (Recommended for Testing)
+```bash
+# Stop all services
+docker compose -f docker-compose.local.yml --profile authelia down
+
+# Delete all data directories
+sudo rm -rf postgres/data synapse/data mas/data mas/certs caddy/data caddy/config
+
+# Re-run deployment
+./deploy.sh
+```
+
+### Solution 2: Manual Password Update (For Preserving Data)
+```bash
+# Get the new password from .env
+source .env
+echo $POSTGRES_PASSWORD
+
+# Connect to PostgreSQL
+docker compose -f docker-compose.local.yml exec postgres psql -U synapse
+
+# Update the password
+ALTER USER synapse WITH PASSWORD 'new_password_from_env';
+\q
+
+# Restart all services
+docker compose -f docker-compose.local.yml --profile authelia restart
+```
+
+### Prevention
+The deploy script now includes a **pre-flight data directory check** that:
+1. Detects existing data directories before deployment
+2. Warns about potential password/config mismatches
+3. Offers three options:
+   - **Clean slate**: Delete all data and start fresh (recommended for testing)
+   - **Keep data**: Continue with existing data (may cause errors)
+   - **Abort**: Exit and manually backup/clean data
+
+This check runs automatically when you execute `./deploy.sh`.
+
+### Why This Happens
+- Docker volumes and bind mounts persist even after `docker compose down`
+- `sudo` operations (used to fix permissions) may leave directories owned by root
+- Partial cleanup (e.g., deleting `.env` but not `postgres/data`) creates inconsistencies
+- PostgreSQL's security model treats the initial password as authoritative
+
+### Impact on All Deployment Variants
+This issue affects:
+- ✅ Local deployment (fixed with data directory check)
+- ✅ Production deployment (fixed with data directory check)
+- ✅ With Authelia (affected)
+- ✅ Without Authelia (affected)
+
+All deployment modes now include the pre-flight check to prevent this issue.
+
+### Official Documentation Gap
+PostgreSQL documentation explains initialization behavior, but doesn't emphasize:
+- The persistence of data across container recreations
+- The implications for scripted deployments that generate dynamic passwords
+- The need to either preserve passwords OR ensure clean data directories
+
+---
+
+## 10. DNS Resolution and TLS Certificate Trust Issues
+
+### Severity
+**CRITICAL** - Prevents authentication and causes complete login failure
+
+### Problem
+Two related issues prevent proper HTTPS communication:
+
+1. **IPv6 DNS Priority**: System DNS resolver returns IPv6 addresses for `*.example.test` domains instead of using `/etc/hosts` IPv4 (127.0.0.1) entries. This causes connections to route to external IPs instead of localhost.
+
+2. **Missing CA Certificate Trust**: Synapse container cannot validate HTTPS connections to MAS because:
+   - Caddy uses self-signed certificates (local CA)
+   - Synapse doesn't have the Caddy CA certificate mounted
+   - Synapse doesn't have `SSL_CERT_FILE` environment variable set
+   - Synapse can't resolve domain names to reach Caddy from within Docker network
+
+### Root Cause
+**DNS Resolution Issue:**
+- `/etc/hosts` only contained IPv4 (127.0.0.1) entries
+- System prefers IPv6 when available
+- DNS lookups for `*.example.test` return public IPv6 addresses
+- Connections timeout or fail when reaching external IPs
+
+**Certificate Trust Issue:**
+- With MSC3861 enabled, Synapse must connect to MAS over HTTPS
+- MAS issuer URL is `https://auth.example.test/`
+- Synapse needs to fetch OIDC discovery metadata from MAS
+- Without CA certificate trust, Synapse gets `SSL routines::tlsv1 alert internal error`
+
+**Docker Network Resolution:**
+- Containers use host's DNS resolver by default
+- Domain names resolve to external IPs from inside containers
+- Containers need `extra_hosts` to route domains back to host machine
+- Host machine forwards to Caddy via published port 443
+
+### Symptoms
+- User cannot log in via Element
+- Synapse logs show no auth-related errors (because issue happens during HTTPS connection)
+- MAS logs show no connection attempts from Synapse
+- Testing from host with `curl https://matrix.example.test/` hangs/times out
+- Testing with `curl --resolve matrix.example.test:443:127.0.0.1` works fine
+- Testing from Synapse container: `curl https://auth.example.test/` fails with SSL error
+- `getent hosts matrix.example.test` returns IPv6 address instead of 127.0.0.1
+
+### Detection
+```bash
+# Check DNS resolution (should return 127.0.0.1 or ::1, not external IP)
+getent hosts matrix.example.test
+
+# Test from host (should work)
+curl -k https://matrix.example.test/_matrix/client/versions
+
+# Test from Synapse container (should work after fix)
+docker exec matrix-synapse curl -sS https://auth.example.test/.well-known/openid-configuration
+
+# Check if CA cert is mounted
+docker exec matrix-synapse ls -la /certs/
+
+# Check SSL_CERT_FILE environment variable
+docker exec matrix-synapse env | grep SSL_CERT_FILE
+```
+
+### Solution Applied
+
+**1. Fix /etc/hosts (Host Machine)**
+Added IPv6 localhost entries alongside IPv4:
+```bash
+# /etc/hosts
+127.0.0.1  matrix.example.test element.example.test auth.example.test authelia.example.test
+::1  matrix.example.test element.example.test auth.example.test authelia.example.test
+```
+
+**2. Mount Caddy CA Certificate in Synapse**
+```yaml
+# docker-compose.local.yml - synapse service
+volumes:
+  - ./synapse/data:/data
+  - ./mas/certs:/certs:ro  # Mount CA certificate directory
+environment:
+  SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+  SSL_CERT_FILE: /certs/caddy-ca.crt  # Trust Caddy's self-signed CA
+```
+
+**3. Configure Domain Resolution in Synapse**
+```yaml
+# docker-compose.local.yml - synapse service
+extra_hosts:
+  - "auth.example.test:host-gateway"
+  - "matrix.example.test:host-gateway"
+```
+
+This allows Synapse to:
+- Resolve `auth.example.test` to the host machine
+- Connect via host's port 443 (forwarded to Caddy)
+- Trust the connection using the mounted CA certificate
+
+### Impact on All Deployment Variants
+This issue affects:
+- ✅ Local deployment (fixed with IPv6 hosts entries and Synapse CA config)
+- ✅ Production deployment (would need same fixes - IPv6 handled by real DNS, CA certs handled by Let's Encrypt)
+- ✅ With Authelia (affected - Synapse needs to reach MAS)
+- ✅ Without Authelia (affected - Synapse still needs to reach MAS)
+
+### Why This Happens
+1. **Local Development Environment**: Uses self-signed certificates requiring explicit trust
+2. **Docker Networking**: Containers don't automatically use host's `/etc/hosts` file
+3. **MSC3861 Architecture**: Synapse MUST be able to reach MAS via HTTPS (issuer URL) to validate tokens
+4. **IPv6 Priority**: Modern systems prefer IPv6 over IPv4 when both protocols are available
+
+### Production Deployment Notes
+In production with real DNS and Let's Encrypt certificates:
+- IPv6 DNS resolution works correctly (points to your actual server)
+- Let's Encrypt certificates are trusted by default
+- `extra_hosts` not needed (real DNS works)
+- `SSL_CERT_FILE` not needed (system trusts Let's Encrypt CA)
+
+This issue is specific to local development with:
+- Self-signed certificates
+- `/etc/hosts`-based DNS
+- Docker networking
+
+### Official Documentation Gap
+Neither Matrix/Synapse nor Caddy documentation clearly explains:
+- The requirement for Synapse to trust the CA when using MSC3861
+- The need to configure DNS resolution from containers to host
+- The IPv6 priority behavior with `/etc/hosts`
+- The TLS requirements for MSC3861 delegated authentication
 
 ---
 

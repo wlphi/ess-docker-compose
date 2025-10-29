@@ -67,6 +67,88 @@ else
 fi
 echo ""
 
+# ============================================================================
+# DATA DIRECTORY CHECK
+# ============================================================================
+echo -e "${YELLOW}Checking for existing data directories...${NC}"
+
+EXISTING_DATA=""
+[[ -d "postgres/data" ]] && [[ "$(ls -A postgres/data 2>/dev/null)" ]] && EXISTING_DATA="${EXISTING_DATA}postgres/data "
+[[ -d "synapse/data" ]] && [[ -f "synapse/data/homeserver.yaml" ]] && EXISTING_DATA="${EXISTING_DATA}synapse/data "
+[[ -d "mas/data" ]] && [[ "$(ls -A mas/data 2>/dev/null)" ]] && EXISTING_DATA="${EXISTING_DATA}mas/data "
+
+if [[ -n "$EXISTING_DATA" ]]; then
+    echo -e "${RED}⚠ WARNING: Existing data directories found:${NC}"
+    for dir in $EXISTING_DATA; do
+        echo -e "  • $dir"
+    done
+    echo ""
+    echo -e "${YELLOW}These directories contain data from a previous deployment.${NC}"
+    echo -e "${YELLOW}If you continue, services may fail to start due to:${NC}"
+    echo -e "  • Mismatched passwords (old DB password != new .env password)"
+    echo -e "  • Stale configurations"
+    echo -e "  • Database schema conflicts"
+    echo ""
+    echo -e "${CYAN}Recommended actions:${NC}"
+    echo -e "  1) ${GREEN}Clean slate${NC} - Delete all data and start fresh (recommended for testing)"
+    echo -e "  2) ${YELLOW}Keep data${NC}   - Continue with existing data (may cause errors)"
+    echo -e "  3) ${RED}Abort${NC}       - Exit and manually backup/clean data"
+    echo ""
+    read -p "Choose [1/2/3]: " DATA_CHOICE
+
+    case "$DATA_CHOICE" in
+        1)
+            echo -e "${YELLOW}Cleaning data directories...${NC}"
+            sudo rm -rf postgres/data synapse/data mas/data mas/certs caddy/data caddy/config
+            mkdir -p postgres/data synapse/data mas/data mas/certs caddy/data caddy/config
+            echo -e "${GREEN}✓${NC} Data directories cleaned"
+            echo ""
+            ;;
+        2)
+            echo -e "${YELLOW}⚠ Continuing with existing data...${NC}"
+            echo -e "${RED}Note: Deployment may fail due to password/config mismatches!${NC}"
+            echo ""
+            ;;
+        3)
+            echo -e "${BLUE}Exiting. Please backup or clean your data manually.${NC}"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}Invalid choice. Exiting.${NC}"
+            exit 1
+            ;;
+    esac
+else
+    echo -e "${GREEN}✓${NC} No existing data found - starting with clean slate"
+    echo ""
+fi
+
+# ============================================================================
+# AUTHELIA SSO SELECTION
+# ============================================================================
+echo -e "${CYAN}Include Authelia SSO?${NC}"
+echo ""
+echo -e "  ${GREEN}Yes)${NC} Use Authelia as upstream OAuth provider"
+echo -e "       → Full SSO with 2FA support"
+echo -e "       → Users authenticate through Authelia"
+echo -e "       → Additional authentication layer"
+echo ""
+echo -e "  ${GREEN}No)${NC}  MAS handles authentication directly"
+echo -e "       → Simpler setup, fewer moving parts"
+echo -e "       → MAS manages users directly"
+echo -e "       → Password-based authentication"
+echo ""
+read -p "Include Authelia? [y/N]: " INCLUDE_AUTHELIA
+
+if [[ "$INCLUDE_AUTHELIA" =~ ^[Yy]$ ]]; then
+    USE_AUTHELIA=true
+    echo -e "${GREEN}✓${NC} Authelia SSO will be included"
+else
+    USE_AUTHELIA=false
+    echo -e "${GREEN}✓${NC} MAS will handle authentication directly (no Authelia)"
+fi
+echo ""
+
 # Function to generate secure random string (32 bytes base64)
 generate_secret() {
     openssl rand -base64 32 | tr -d "=+/" | cut -c1-32
@@ -113,12 +195,10 @@ if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
     echo -e "  Authelia:    https://${AUTHELIA_DOMAIN}"
     echo ""
     echo -e "${YELLOW}⚠ Remember to add these to /etc/hosts:${NC}"
-    echo -e "  127.0.0.1  ${MATRIX_DOMAIN}"
-    echo -e "  127.0.0.1  ${ELEMENT_DOMAIN}"
-    echo -e "  127.0.0.1  ${AUTH_DOMAIN}"
-    echo -e "  127.0.0.1  ${AUTHELIA_DOMAIN}"
+    echo -e "  127.0.0.1  ${MATRIX_DOMAIN} ${ELEMENT_DOMAIN} ${AUTH_DOMAIN} ${AUTHELIA_DOMAIN}"
+    echo -e "  ::1        ${MATRIX_DOMAIN} ${ELEMENT_DOMAIN} ${AUTH_DOMAIN} ${AUTHELIA_DOMAIN}"
     echo ""
-    echo -e "${BLUE}ℹ Note: Using example.test (not .localhost) to avoid public suffix list issues${NC}"
+    echo -e "${BLUE}ℹ Note: IPv6 entry (::1) required to prevent DNS lookups bypassing /etc/hosts${NC}"
     echo ""
     read -p "Press Enter to continue..."
     echo ""
@@ -256,30 +336,32 @@ fi
 print_status ".env file updated"
 echo ""
 
-# Step 4: Generate RSA key for Authelia
-echo -e "${BLUE}[4/12] Generating RSA key for Authelia OIDC...${NC}"
-openssl genrsa -out authelia_private.pem 4096 2>/dev/null
-AUTHELIA_RSA_KEY=$(cat authelia_private.pem)
-print_status "Authelia RSA key generated"
-echo ""
+# Conditional: Authelia configuration (Steps 4-8)
+if [[ "$USE_AUTHELIA" == true ]]; then
+    # Step 4: Generate RSA key for Authelia
+    echo -e "${BLUE}[4/13] Generating RSA key for Authelia OIDC...${NC}"
+    openssl genrsa -out authelia_private.pem 4096 2>/dev/null
+    AUTHELIA_RSA_KEY=$(cat authelia_private.pem)
+    print_status "Authelia RSA key generated"
+    echo ""
 
-# Step 5: Generate client secret for Authelia
-echo -e "${BLUE}[5/12] Generating Authelia client secret...${NC}"
-CLIENT_SECRET_PLAIN=$(generate_secret)
-# Generate hash for Authelia config
-CLIENT_SECRET_HASH=$($DOCKER_CMD run --rm authelia/authelia:latest authelia crypto hash generate pbkdf2 --variant sha512 --password "${CLIENT_SECRET_PLAIN}" 2>/dev/null | grep "Digest:" | awk '{print $2}')
-print_status "Client secret generated"
-echo ""
+    # Step 5: Generate client secret for Authelia
+    echo -e "${BLUE}[5/13] Generating Authelia client secret...${NC}"
+    CLIENT_SECRET_PLAIN=$(generate_secret)
+    # Generate hash for Authelia config
+    CLIENT_SECRET_HASH=$($DOCKER_CMD run --rm authelia/authelia:latest authelia crypto hash generate pbkdf2 --variant sha512 --password "${CLIENT_SECRET_PLAIN}" 2>/dev/null | grep "Digest:" | awk '{print $2}')
+    print_status "Client secret generated"
+    echo ""
 
-# Step 6: Generate password hash for default admin user
-echo -e "${BLUE}[6/12] Generating default admin user...${NC}"
-ADMIN_PASSWORD=$(generate_secret)  # Generate secure random password
-ADMIN_PASSWORD_HASH=$($DOCKER_CMD run --rm authelia/authelia:latest authelia crypto hash generate argon2 --password "${ADMIN_PASSWORD}" 2>/dev/null | grep "Digest:" | awk '{print $2}')
-print_status "Admin user password hash generated"
-print_warning "Default admin password: ${ADMIN_PASSWORD} (SAVE THIS - you'll need it to log in!)"
-echo ""
+    # Step 6: Generate password hash for default admin user
+    echo -e "${BLUE}[6/13] Generating default admin user...${NC}"
+    ADMIN_PASSWORD=$(generate_secret)  # Generate secure random password
+    ADMIN_PASSWORD_HASH=$($DOCKER_CMD run --rm authelia/authelia:latest authelia crypto hash generate argon2 --password "${ADMIN_PASSWORD}" 2>/dev/null | grep "Digest:" | awk '{print $2}')
+    print_status "Admin user password hash generated"
+    print_warning "Default admin password: ${ADMIN_PASSWORD} (SAVE THIS - you'll need it to log in!)"
+    echo ""
 
-# Step 7: Update Authelia configuration
+    # Step 7: Update Authelia configuration
 echo -e "${BLUE}[7/12] Configuring Authelia...${NC}"
 cat > authelia/config/configuration.yml << EOF
 ---
@@ -385,9 +467,9 @@ EOF
 print_status "Authelia configuration updated"
 echo ""
 
-# Step 8: Create Authelia users database
-echo -e "${BLUE}[8/12] Creating Authelia users database...${NC}"
-cat > authelia/config/users_database.yml << EOF
+    # Step 8: Create Authelia users database
+    echo -e "${BLUE}[8/13] Creating Authelia users database...${NC}"
+    cat > authelia/config/users_database.yml << EOF
 ---
 # Authelia Users Database
 
@@ -401,8 +483,12 @@ users:
       - users
 EOF
 
-print_status "Authelia users database created"
-echo ""
+    print_status "Authelia users database created"
+    echo ""
+else
+    print_info "Skipping Authelia configuration (not included in deployment)"
+    echo ""
+fi
 
 # Step 9: Generate MAS signing key and Synapse client secret
 echo -e "${BLUE}[9/12] Generating MAS signing key and Synapse client secret...${NC}"
@@ -455,8 +541,10 @@ EOF
 # Add the MAS signing key with proper indentation
 echo "$MAS_SIGNING_KEY" | sed 's/^/        /' >> mas/config/config.yaml
 
-# Continue with the rest of the MAS config
-cat >> mas/config/config.yaml << EOF
+# Continue with the rest of the MAS config - conditional based on Authelia usage
+if [[ "$USE_AUTHELIA" == true ]]; then
+    # With Authelia: Use upstream OAuth2 provider
+    cat >> mas/config/config.yaml << EOF
 
 upstream_oauth2:
   providers:
@@ -487,6 +575,23 @@ matrix:
 
 passwords:
   enabled: false  # Using Authelia SSO instead
+EOF
+else
+    # Without Authelia: MAS handles authentication directly
+    cat >> mas/config/config.yaml << EOF
+
+matrix:
+  homeserver: '${MATRIX_DOMAIN}'
+  endpoint: 'http://synapse:8008'
+  secret: '${SYNAPSE_SHARED_SECRET}'
+
+passwords:
+  enabled: true  # MAS handles password authentication directly
+EOF
+fi
+
+# Common configuration continues (email, branding, policy, clients)
+cat >> mas/config/config.yaml << EOF
 
 email:
   from: '"Matrix Authentication Service" <noreply@matrix.localhost>'
@@ -521,7 +626,11 @@ clients:
     client_secret: '${SYNAPSE_CLIENT_SECRET}'
 EOF
 
-print_status "MAS configuration created"
+if [[ "$USE_AUTHELIA" == true ]]; then
+    print_status "MAS configuration created (with Authelia upstream provider)"
+else
+    print_status "MAS configuration created (password authentication enabled)"
+fi
 echo ""
 
 # Step 11: Create Element Web configuration
@@ -574,6 +683,13 @@ if [ ! -f "synapse/data/homeserver.yaml" ]; then
 
     # Backup original config
     cp synapse/data/homeserver.yaml synapse/data/homeserver.yaml.bak
+
+    # Remove the default SQLite database configuration (4 lines)
+    # database:
+    #   name: sqlite3
+    #   args:
+    #     database: /data/homeserver.db
+    sed -i '/^database:/,+3d' synapse/data/homeserver.yaml
 
     # Add PostgreSQL config
     cat >> synapse/data/homeserver.yaml << EOF
@@ -646,17 +762,22 @@ for i in {1..60}; do
 done
 echo ""
 
-# Start Redis (if in local mode, it's part of the stack)
-if [[ "$DEPLOYMENT_MODE" == "local" ]] || [[ "$DEPLOYMENT_MODE" == "production" ]]; then
-    print_info "Starting Redis..."
-    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} up -d redis
+# Start Redis (only if using Authelia)
+if [[ "$USE_AUTHELIA" == true ]]; then
+    print_info "Starting Redis (for Authelia)..."
+    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} --profile authelia up -d redis
     sleep 3
     echo ""
 fi
 
 # Start remaining services
-print_info "Starting all services..."
-$DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} up -d
+if [[ "$USE_AUTHELIA" == true ]]; then
+    print_info "Starting all services (with Authelia)..."
+    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} --profile authelia up -d
+else
+    print_info "Starting all services (without Authelia)..."
+    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} up -d
+fi
 echo ""
 
 # Wait for services to be ready
@@ -670,16 +791,24 @@ echo ""
 if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
     echo -e "${BLUE}[Post-Deployment] Extracting Caddy CA certificate for MAS...${NC}"
 
-    # Create certs directory
+    # Create certs and caddy data directories
     mkdir -p mas/certs
+    mkdir -p caddy/data/caddy  # Required for Caddy to save PKI certificates
 
     # Wait for Caddy to generate CA
     print_info "Waiting for Caddy to generate local CA..."
     sleep 5
 
-    # Extract CA certificate
-    if $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > mas/certs/caddy-ca.crt 2>/dev/null; then
-        print_status "Caddy CA certificate extracted to mas/certs/caddy-ca.crt"
+    # Trigger HTTPS requests to force Caddy to generate certificates
+    print_info "Triggering certificate generation..."
+    curl -k https://${AUTH_DOMAIN} > /dev/null 2>&1 || true
+    sleep 3
+
+    # Copy CA certificate from host path (Caddy saves to volume)
+    if [ -f "caddy/data/caddy/pki/authorities/local/root.crt" ]; then
+        cp caddy/data/caddy/pki/authorities/local/root.crt mas/certs/caddy-ca.crt
+        chmod 644 mas/certs/caddy-ca.crt
+        print_status "Caddy CA certificate copied to mas/certs/caddy-ca.crt"
 
         # Restart MAS to pick up the certificate
         print_info "Restarting MAS to load CA certificate..."
@@ -687,9 +816,10 @@ if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
         sleep 5
         print_status "MAS restarted with trusted CA certificate"
     else
-        print_warning "Could not extract Caddy CA certificate (Caddy may still be initializing)"
-        print_info "If you see SSL errors, run: docker compose -f ${COMPOSE_FILE} exec caddy cat /data/caddy/pki/authorities/local/root.crt > mas/certs/caddy-ca.crt"
-        print_info "Then restart MAS: docker compose -f ${COMPOSE_FILE} restart mas"
+        print_warning "Could not find Caddy CA certificate at caddy/data/caddy/pki/authorities/local/root.crt"
+        print_info "You may need to manually copy it after Caddy generates it"
+        print_info "Run: cp caddy/data/caddy/pki/authorities/local/root.crt mas/certs/caddy-ca.crt"
+        print_info "Then restart MAS: $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} restart mas"
     fi
     echo ""
 fi
@@ -864,7 +994,9 @@ if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
     echo -e "  • Element Web:  https://${ELEMENT_DOMAIN}"
     echo -e "  • Matrix API:   https://${MATRIX_DOMAIN}"
     echo -e "  • MAS (Auth):   https://${AUTH_DOMAIN}"
-    echo -e "  • Authelia:     https://${AUTHELIA_DOMAIN}"
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        echo -e "  • Authelia:     https://${AUTHELIA_DOMAIN}"
+    fi
     echo -e "  • Caddy Admin:  http://localhost:2019"
     echo ""
     echo -e "${YELLOW}⚠ Self-Signed Certificate Warning:${NC}"
@@ -872,20 +1004,33 @@ if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
     echo -e "  self-signed certificates for local testing. This is expected!"
     echo -e "  Click 'Advanced' and 'Proceed to site' to continue."
     echo ""
-    echo -e "${BLUE}Authelia Login Credentials:${NC}"
-    echo -e "  • Username:     admin"
-    echo -e "  • Password:     ${ADMIN_PASSWORD}"
-    echo -e "  ${RED}⚠ SAVE THIS PASSWORD - you'll need it to log in!${NC}"
-    echo ""
-    echo -e "${BLUE}Next Steps:${NC}"
-    echo -e "  1. Go to https://${ELEMENT_DOMAIN}"
-    echo -e "  2. Accept the self-signed certificate warning"
-    echo -e "  3. Click 'Sign In'"
-    echo -e "  4. You'll be redirected through MAS → Authelia for SSO"
-    echo -e "  5. Log in with the Authelia credentials above"
-    echo -e "  6. Set up 2FA (Time-based OTP) for additional security"
-    echo -e "  7. Complete registration and start chatting!"
-    echo ""
+
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        echo -e "${BLUE}Authelia Login Credentials:${NC}"
+        echo -e "  • Username:     admin"
+        echo -e "  • Password:     ${ADMIN_PASSWORD}"
+        echo -e "  ${RED}⚠ SAVE THIS PASSWORD - you'll need it to log in!${NC}"
+        echo ""
+        echo -e "${BLUE}Next Steps:${NC}"
+        echo -e "  1. Go to https://${ELEMENT_DOMAIN}"
+        echo -e "  2. Accept the self-signed certificate warning"
+        echo -e "  3. Click 'Sign In'"
+        echo -e "  4. You'll be redirected through MAS → Authelia for SSO"
+        echo -e "  5. Log in with the Authelia credentials above"
+        echo -e "  6. Set up 2FA (Time-based OTP) for additional security"
+        echo -e "  7. Complete registration and start chatting!"
+        echo ""
+    else
+        echo -e "${BLUE}Next Steps:${NC}"
+        echo -e "  1. Go to https://${ELEMENT_DOMAIN}"
+        echo -e "  2. Accept the self-signed certificate warning"
+        echo -e "  3. Click 'Sign In'"
+        echo -e "  4. You'll be redirected to MAS for authentication"
+        echo -e "  5. Register a new account with your email and password"
+        echo -e "  6. Complete email verification if required"
+        echo -e "  7. Start chatting!"
+        echo ""
+    fi
 else
     # Production mode
     echo -e "${BLUE}Matrix Server Deployed!${NC}"
@@ -932,26 +1077,41 @@ else
     echo ""
 fi
 echo -e "${BLUE}Useful Commands:${NC}"
-echo -e "  • View logs:        $DOCKER_COMPOSE_CMD logs -f"
-echo -e "  • Stop stack:       $DOCKER_COMPOSE_CMD down"
-echo -e "  • Restart service:  $DOCKER_COMPOSE_CMD restart <service>"
-echo -e "  • View status:      $DOCKER_COMPOSE_CMD ps"
+if [[ "$USE_AUTHELIA" == true ]]; then
+    echo -e "  • View logs:        $DOCKER_COMPOSE_CMD --profile authelia logs -f"
+    echo -e "  • Stop stack:       $DOCKER_COMPOSE_CMD --profile authelia down"
+    echo -e "  • Restart service:  $DOCKER_COMPOSE_CMD --profile authelia restart <service>"
+    echo -e "  • View status:      $DOCKER_COMPOSE_CMD --profile authelia ps"
+else
+    echo -e "  • View logs:        $DOCKER_COMPOSE_CMD logs -f"
+    echo -e "  • Stop stack:       $DOCKER_COMPOSE_CMD down"
+    echo -e "  • Restart service:  $DOCKER_COMPOSE_CMD restart <service>"
+    echo -e "  • View status:      $DOCKER_COMPOSE_CMD ps"
+fi
 echo ""
 echo -e "${BLUE}Generated Files:${NC}"
 echo -e "  • .env                              - Environment variables"
-echo -e "  • authelia_private.pem              - Authelia RSA key"
+if [[ "$USE_AUTHELIA" == true ]]; then
+    echo -e "  • authelia_private.pem              - Authelia RSA key"
+fi
 echo -e "  • mas-signing.key                   - MAS signing key"
-echo -e "  • authelia/config/configuration.yml - Authelia config"
-echo -e "  • authelia/config/users_database.yml - User accounts"
+if [[ "$USE_AUTHELIA" == true ]]; then
+    echo -e "  • authelia/config/configuration.yml - Authelia config"
+    echo -e "  • authelia/config/users_database.yml - User accounts"
+fi
 echo -e "  • mas/config/config.yaml            - MAS config"
 echo -e "  • synapse/data/homeserver.yaml      - Synapse config"
 echo ""
 echo -e "${YELLOW}Important Notes:${NC}"
 echo -e "  • Using example.test domains (not .localhost) to avoid public suffix list issues"
 echo -e "  • All critical bugfixes have been applied (see BUGFIXES.md for details)"
-echo -e "  • MAS configured with assets resource, fetch_userinfo enabled, and internal discovery"
-echo -e "  • Authelia using preferred_username claim (compatible with MAS)"
-echo -e "  • SSL certificate trust configured for local development"
+echo -e "  • MAS configured with assets resource and internal discovery"
+if [[ "$USE_AUTHELIA" == true ]]; then
+    echo -e "  • Authelia upstream provider enabled with fetch_userinfo and preferred_username claim"
+    echo -e "  • SSL certificate trust configured for local development"
+else
+    echo -e "  • MAS handling password authentication directly (no upstream provider)"
+fi
 echo ""
 echo -e "${BLUE}Troubleshooting:${NC}"
 echo -e "  • If CSS is missing: Check that MAS has 'assets' resource in config"

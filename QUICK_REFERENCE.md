@@ -9,14 +9,34 @@ Quick command reference for common operations.
 chmod +x deploy.sh
 ./deploy.sh
 
+# During deployment, you'll be asked:
+# - Deployment type (local/production)
+# - Whether to include Authelia SSO (Y/n)
+
 # Update /etc/hosts first!
 sudo nano /etc/hosts
-# Add:
+# Add (for local deployment):
 # 127.0.0.1  matrix.example.test
 # 127.0.0.1  element.example.test
 # 127.0.0.1  auth.example.test
-# 127.0.0.1  authelia.example.test
+# 127.0.0.1  authelia.example.test  (only if using Authelia)
 ```
+
+## 🔑 Authentication Options
+
+The deployment script offers two authentication modes:
+
+### With Authelia (Recommended)
+- Full SSO with 2FA support
+- LDAP/file-based user management
+- Centralized authentication
+- Includes Redis for session storage
+
+### Without Authelia (MAS Only)
+- MAS handles password authentication directly
+- Simpler setup for basic use cases
+- No upstream OAuth provider required
+- No Redis dependency
 
 ## 🌐 Access URLs
 
@@ -29,6 +49,27 @@ sudo nano /etc/hosts
 | Caddy Admin | http://localhost:2019 |
 
 ## 📦 Service Management
+
+### With Authelia
+
+```bash
+# View all services
+docker compose -f docker-compose.local.yml --profile authelia ps
+
+# Start all services
+docker compose -f docker-compose.local.yml --profile authelia up -d
+
+# Stop all services
+docker compose -f docker-compose.local.yml --profile authelia down
+
+# Restart specific service
+docker compose -f docker-compose.local.yml --profile authelia restart mas
+
+# Restart all services
+docker compose -f docker-compose.local.yml --profile authelia restart
+```
+
+### Without Authelia (MAS Only)
 
 ```bash
 # View all services
@@ -50,11 +91,13 @@ docker compose -f docker-compose.local.yml restart
 ## 📝 Logs
 
 ```bash
-# Follow all logs
+# Follow all logs (add --profile authelia if using Authelia)
 docker compose -f docker-compose.local.yml logs -f
+docker compose -f docker-compose.local.yml --profile authelia logs -f  # with Authelia
 
 # Follow specific service
 docker compose -f docker-compose.local.yml logs -f mas
+docker compose -f docker-compose.local.yml --profile authelia logs -f authelia  # Authelia logs
 
 # Last 100 lines
 docker compose -f docker-compose.local.yml logs --tail=100 synapse
