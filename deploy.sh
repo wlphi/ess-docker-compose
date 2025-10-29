@@ -96,12 +96,26 @@ if [[ -n "$EXISTING_DATA" ]]; then
         fi
     fi
 
-    # Automatic cleanup to prevent Issue #9 (PostgreSQL password mismatch)
-    sudo rm -rf postgres/data synapse/data mas/data mas/certs caddy/data caddy/config bridges/*/config
+    # Stop all containers and remove volumes to prevent PostgreSQL password conflicts
+    echo -e "${YELLOW}Stopping containers and removing volumes...${NC}"
+    docker compose down -v 2>/dev/null || true
+
+    # Surgical cleanup: Only remove postgres/data (source of password mismatch)
+    # Preserve synapse/data/homeserver.yaml (keeps custom mail config, etc.)
+    # Preserve mas/config (keeps CLIENT_SECRET for Authelia)
+    echo -e "${YELLOW}Cleaning PostgreSQL data to fix password mismatch...${NC}"
+    echo -e "${GREEN}✓${NC} Preserving synapse/data/homeserver.yaml (custom configs maintained)"
+    echo -e "${GREEN}✓${NC} Preserving mas/config (Authelia integration maintained)"
+
+    sudo rm -rf postgres/data
+    sudo rm -rf mas/data mas/certs
+    sudo rm -rf caddy/data caddy/config
+    sudo rm -rf bridges/*/config
+
     mkdir -p postgres/data synapse/data mas/data mas/certs caddy/data caddy/config
     mkdir -p bridges/telegram/config bridges/whatsapp/config bridges/signal/config
 
-    echo -e "${GREEN}✓${NC} Data directories cleaned - starting fresh deployment"
+    echo -e "${GREEN}✓${NC} PostgreSQL data cleaned - custom configurations preserved"
     echo ""
 else
     echo -e "${GREEN}✓${NC} No existing data found - starting with clean slate"
