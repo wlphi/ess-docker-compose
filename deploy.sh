@@ -700,30 +700,41 @@ echo ""
 
 # Step 12: Generate Synapse configuration
 echo -e "${BLUE}[12/13] Generating Synapse configuration...${NC}"
+
+# Generate homeserver.yaml if it doesn't exist
 if [ ! -f "synapse/data/homeserver.yaml" ]; then
+    print_info "Generating new homeserver.yaml..."
     $DOCKER_CMD run -it --rm \
         -v $(pwd)/synapse/data:/data \
         -e SYNAPSE_SERVER_NAME=${MATRIX_DOMAIN} \
         -e SYNAPSE_REPORT_STATS=no \
         matrixdotorg/synapse:latest generate
+    print_status "Synapse configuration generated"
+else
+    print_info "Existing homeserver.yaml found - preserving custom configurations"
+fi
 
-    # Update Synapse config for PostgreSQL
-    print_info "Configuring Synapse for PostgreSQL..."
+# Always update database section (to match new .env password)
+print_info "Updating database configuration..."
 
-    # Backup original config
-    cp synapse/data/homeserver.yaml synapse/data/homeserver.yaml.bak
+# Backup before modifying
+cp synapse/data/homeserver.yaml synapse/data/homeserver.yaml.bak 2>/dev/null || true
 
-    # Remove the default SQLite database configuration (4 lines)
-    # database:
-    #   name: sqlite3
-    #   args:
-    #     database: /data/homeserver.db
-    sed -i '/^database:/,+3d' synapse/data/homeserver.yaml
+# Remove old database configuration (both SQLite and PostgreSQL)
+sed -i '/^database:/,/^[^ ]/{ /^database:/d; /^[^ ]/!d }' synapse/data/homeserver.yaml
 
-    # Add PostgreSQL config
-    cat >> synapse/data/homeserver.yaml << EOF
+# Remove old MAS integration section if present
+sed -i '/^# MAS Integration/,/^[^ ]/{ /^# MAS Integration/d; /^[^ ]/!d }' synapse/data/homeserver.yaml
+sed -i '/^experimental_features:/,/^[^ ]/{ /^experimental_features:/d; /^[^ ]/!d }' synapse/data/homeserver.yaml
 
-# PostgreSQL Database Configuration (added by deploy.sh)
+# Remove old enable_registration if present
+sed -i '/^# Enable registration/d' synapse/data/homeserver.yaml
+sed -i '/^enable_registration:/d' synapse/data/homeserver.yaml
+
+# Add PostgreSQL and MAS config (always with current passwords)
+cat >> synapse/data/homeserver.yaml << EOF
+
+# PostgreSQL Database Configuration (added/updated by deploy.sh)
 database:
   name: psycopg2
   args:
@@ -749,10 +760,7 @@ experimental_features:
     admin_token: ${SYNAPSE_SHARED_SECRET}
 EOF
 
-    print_status "Synapse configuration generated and updated"
-else
-    print_warning "Synapse config already exists, skipping generation"
-fi
+print_status "Database configuration updated with current credentials"
 echo ""
 
 # Step 13: Fix directory permissions
