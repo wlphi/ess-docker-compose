@@ -55,11 +55,11 @@ read -p "Enter choice [1 or 2]: " DEPLOYMENT_TYPE
 
 if [[ "$DEPLOYMENT_TYPE" == "1" ]]; then
     DEPLOYMENT_MODE="local"
-    COMPOSE_FILE="docker-compose.local.yml"
+    COMPOSE_FILE="compose-variants/docker-compose.local.yml"
     echo -e "${GREEN}✓${NC} Selected: Local Testing Mode"
 elif [[ "$DEPLOYMENT_TYPE" == "2" ]]; then
     DEPLOYMENT_MODE="production"
-    COMPOSE_FILE="docker-compose.production.yml"
+    COMPOSE_FILE="docker-compose.yml"
     echo -e "${GREEN}✓${NC} Selected: Production Mode"
 else
     echo -e "${RED}✗${NC} Invalid choice. Exiting."
@@ -232,33 +232,22 @@ else
     AUTHELIA_SUBDOMAIN=${AUTHELIA_SUBDOMAIN:-authelia}
     AUTHELIA_DOMAIN="${AUTHELIA_SUBDOMAIN}.${DOMAIN_BASE}"
 
-    echo ""
-    echo -e "${CYAN}Backend Server IPs:${NC}"
-    echo ""
-
-    # Matrix server IP (this machine)
-    read -p "Enter Matrix server IP (this machine): " MATRIX_SERVER_IP
-
-    # Authelia server IP
-    read -p "Enter Authelia server IP: " AUTHELIA_SERVER_IP
-
-    # Email for Let's Encrypt
-    read -p "Enter email for Let's Encrypt certificates: " LETSENCRYPT_EMAIL
+    # Set placeholder values for multi-machine deployment
+    # (These will be used in generated Caddyfile template - update manually on Caddy server)
+    MATRIX_SERVER_IP="10.0.1.10"
+    AUTHELIA_SERVER_IP="10.0.1.20"
+    LETSENCRYPT_EMAIL="admin@${DOMAIN_BASE}"
 
     echo ""
     echo -e "${GREEN}✓${NC} Configuration Summary:"
     echo -e "  Base Domain:     ${DOMAIN_BASE}"
-    echo -e "  Matrix:          https://${MATRIX_DOMAIN} (Backend: ${MATRIX_SERVER_IP})"
-    echo -e "  Element:         https://${ELEMENT_DOMAIN} (Backend: ${MATRIX_SERVER_IP})"
-    echo -e "  MAS:             https://${AUTH_DOMAIN} (Backend: ${MATRIX_SERVER_IP})"
-    echo -e "  Authelia:        https://${AUTHELIA_DOMAIN} (Backend: ${AUTHELIA_SERVER_IP})"
-    echo -e "  Let's Encrypt:   ${LETSENCRYPT_EMAIL}"
+    echo -e "  Matrix:          https://${MATRIX_DOMAIN}"
+    echo -e "  Element:         https://${ELEMENT_DOMAIN}"
+    echo -e "  MAS:             https://${AUTH_DOMAIN}"
+    echo -e "  Authelia:        https://${AUTHELIA_DOMAIN}"
     echo ""
-    read -p "Is this correct? [y/N]: " CONFIRM
-    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-        echo -e "${RED}✗${NC} Aborted by user"
-        exit 1
-    fi
+    print_info "Note: For multi-machine deployment, use MULTI_MACHINE_CONFIG_SNIPPETS.md"
+    print_info "      Copy generated configs from authelia/config/ to your Authelia server"
     echo ""
 fi
 
@@ -338,7 +327,8 @@ EOF
 if [[ "$DEPLOYMENT_MODE" == "production" ]]; then
     cat >> .env << EOF
 
-# Production Configuration
+# Production Configuration (Placeholder values for multi-machine deployment)
+# For multi-machine: Update these on your Caddy server's Caddyfile
 MATRIX_SERVER_IP=${MATRIX_SERVER_IP}
 AUTHELIA_SERVER_IP=${AUTHELIA_SERVER_IP}
 LETSENCRYPT_EMAIL=${LETSENCRYPT_EMAIL}
