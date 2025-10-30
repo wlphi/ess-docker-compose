@@ -1,0 +1,257 @@
+# Caddy Configuration for Matrix Server
+# Replace {{MATRIX_DOMAIN}} and {{ELEMENT_DOMAIN}} with your actual domains
+#
+# This configuration handles:
+# - Matrix homeserver (Synapse) via MAS
+# - Matrix Authentication Service (MAS)
+# - Element Web client
+# - Federation (for communicating with other Matrix servers)
+# - Automatic HTTPS with Let's Encrypt
+
+# Global options
+{
+    # Email for Let's Encrypt notifications
+    email admin@example.com
+
+    # Uncomment for staging/testing to avoid rate limits
+    # acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# ============================================
+# Matrix Homeserver and MAS
+# ============================================
+{{MATRIX_DOMAIN}} {
+    # Logging
+    log {
+        output file /var/log/caddy/matrix.log
+        level INFO
+    }
+
+    # Request size limit for file uploads
+    request_body {
+        max_size 50MB
+    }
+
+    # Matrix Client-Server API and Federation
+    # These requests go to Synapse
+    handle /_matrix/* {
+        reverse_proxy http://localhost:8008 {
+            # Or if Caddy is on a separate server:
+            # reverse_proxy http://YOUR_MATRIX_SERVER_IP:8008 {
+
+            # Required headers for Synapse
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+
+            # Health check
+            health_uri /health
+            health_interval 30s
+            health_timeout 10s
+        }
+    }
+
+    # Matrix Authentication Service (MAS) endpoints
+    # MAS handles authentication and account management
+    handle /oauth2/* {
+        reverse_proxy http://localhost:8080 {
+            # Or if Caddy is on a separate server:
+            # reverse_proxy http://YOUR_MATRIX_SERVER_IP:8080 {
+
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    handle /account/* {
+        reverse_proxy http://localhost:8080 {
+            # Or if Caddy is on a separate server:
+            # reverse_proxy http://YOUR_MATRIX_SERVER_IP:8080 {
+
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    handle /.well-known/oauth-authorization-server {
+        reverse_proxy http://localhost:8080 {
+            # Or if Caddy is on a separate server:
+            # reverse_proxy http://YOUR_MATRIX_SERVER_IP:8080 {
+
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Assets for MAS UI
+    handle /assets/* {
+        reverse_proxy http://localhost:8080 {
+            # Or if Caddy is on a separate server:
+            # reverse_proxy http://YOUR_MATRIX_SERVER_IP:8080 {
+
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # GraphQL endpoint for MAS
+    handle /graphql {
+        reverse_proxy http://localhost:8080 {
+            # Or if Caddy is on a separate server:
+            # reverse_proxy http://YOUR_MATRIX_SERVER_IP:8080 {
+
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Root path - redirect to Element or show a landing page
+    handle / {
+        redir https://{{ELEMENT_DOMAIN}} permanent
+    }
+
+    # Security headers
+    header {
+        # Security headers
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+
+        # Remove server identification
+        -Server
+    }
+
+    # Rate limiting (adjust as needed)
+    # Requires caddy-ext/caddy-ext (plugin)
+    # See: https://caddyserver.com/docs/modules/http.handlers.rate_limit
+}
+
+# ============================================
+# Element Web Client
+# ============================================
+{{ELEMENT_DOMAIN}} {
+    # Logging
+    log {
+        output file /var/log/caddy/element.log
+        level INFO
+    }
+
+    # Reverse proxy to Element Web container
+    reverse_proxy http://localhost:8082 {
+        # Or if Caddy is on a separate server:
+        # reverse_proxy http://YOUR_MATRIX_SERVER_IP:8082 {
+
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Security headers
+    header {
+        # Security headers
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+
+        # Content Security Policy (adjust as needed for Element)
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://{{MATRIX_DOMAIN}}; frame-ancestors 'self'; base-uri 'self'; form-action 'self';"
+
+        # Remove server identification
+        -Server
+    }
+
+    # Enable compression
+    encode gzip
+
+    # Cache static assets
+    @static {
+        path *.js *.css *.woff *.woff2 *.ttf *.eot *.svg *.png *.jpg *.gif *.ico
+    }
+    header @static Cache-Control "public, max-age=31536000, immutable"
+}
+
+# ============================================
+# Federation Server (Matrix Server-to-Server)
+# ============================================
+# Port 8448 is the standard federation port
+# This configuration assumes federation traffic comes in on port 443
+# and is routed based on headers
+#
+# If you need to listen on port 8448, add this block:
+#
+# {{MATRIX_DOMAIN}}:8448 {
+#     reverse_proxy http://localhost:8008 {
+#         header_up X-Forwarded-For {remote_host}
+#         header_up X-Forwarded-Proto {scheme}
+#     }
+# }
+
+# ============================================
+# Optional: Element Admin Interface
+# ============================================
+# Uncomment if you want to expose Element Admin via Caddy
+# WARNING: Restrict access to trusted IPs only!
+#
+# admin.{{MATRIX_DOMAIN}} {
+#     # IP whitelist - CHANGE THESE IPs!
+#     @allowed {
+#         remote_ip 192.168.1.0/24 10.0.0.0/8
+#     }
+#
+#     # Deny access from other IPs
+#     handle @allowed {
+#         reverse_proxy http://localhost:8081 {
+#             header_up X-Forwarded-For {remote_host}
+#             header_up X-Forwarded-Proto {scheme}
+#         }
+#     }
+#
+#     handle {
+#         respond "Access Denied" 403
+#     }
+# }
+
+# ============================================
+# Notes:
+# ============================================
+#
+# 1. Replace {{MATRIX_DOMAIN}} with your Matrix server domain
+#    Example: matrix.example.com
+#
+# 2. Replace {{ELEMENT_DOMAIN}} with your Element client domain
+#    Example: element.example.com
+#
+# 3. Update email address in global options for Let's Encrypt
+#
+# 4. If Caddy is on a SEPARATE server from Matrix:
+#    - Uncomment the lines with YOUR_MATRIX_SERVER_IP
+#    - Replace localhost with your Matrix server IP
+#    - Ensure firewall allows connections on ports 8008, 8080, 8082
+#
+# 5. The Element Web service needs to be exposed on port 8082
+#    Add this to your docker-compose.yml for the element service:
+#    ports:
+#      - "8082:80"
+#
+# 6. Logs will be written to /var/log/caddy/
+#    Ensure this directory exists and is writable
+#
+# 7. For production, consider:
+#    - Setting up log rotation
+#    - Implementing rate limiting
+#    - Restricting Element Admin access by IP
+#    - Monitoring certificate renewal
+#    - Setting up health checks and alerts
+#
+# 8. DNS Configuration Required:
+#    - A record: {{MATRIX_DOMAIN}} → Your server IP
+#    - A record: {{ELEMENT_DOMAIN}} → Your server IP
+#    - SRV record (optional, for federation):
+#      _matrix._tcp.{{MATRIX_DOMAIN}} → {{MATRIX_DOMAIN}}:443
+#
+# 9. Firewall Configuration:
+#    - Allow inbound: 80/tcp (HTTP, for ACME challenges)
+#    - Allow inbound: 443/tcp (HTTPS)
+#    - Optional: 8448/tcp (federation, if not using .well-known)
+#
+# ============================================

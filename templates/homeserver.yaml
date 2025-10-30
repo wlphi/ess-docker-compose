@@ -1,0 +1,179 @@
+# Synapse Homeserver Configuration
+# Replace all {{PLACEHOLDER}} values with your actual configuration
+
+# Server name - This is your Matrix domain (e.g., matrix.example.com)
+server_name: "{{MATRIX_DOMAIN}}"
+
+# Public base URL for client API
+public_baseurl: "https://{{MATRIX_DOMAIN}}/"
+
+# Listeners
+listeners:
+  # Client API
+  - port: 8008
+    tls: false  # TLS termination handled by reverse proxy
+    type: http
+    x_forwarded: true
+    bind_addresses: ['0.0.0.0']
+    resources:
+      - names: [client, federation]
+        compress: false
+
+# Database configuration
+database:
+  name: psycopg2
+  args:
+    user: synapse
+    password: "{{POSTGRES_PASSWORD}}"  # MUST match POSTGRES_PASSWORD in .env
+    database: synapse
+    host: postgres
+    port: 5432
+    cp_min: 5
+    cp_max: 10
+
+# Media storage
+media_store_path: "/data/media_store"
+max_upload_size: "50M"
+max_image_pixels: "32M"
+
+# Registration
+# Disabled by default - use MAS for user registration
+enable_registration: false
+registration_shared_secret: "{{SYNAPSE_REGISTRATION_SHARED_SECRET}}"
+
+# Allow guest access
+allow_guest_access: false
+
+# Experimental features for MAS integration
+experimental_features:
+  # Enable MSC3861 for Matrix Authentication Service integration
+  msc3861:
+    enabled: true
+    # MAS issuer URL
+    issuer: "https://{{MATRIX_DOMAIN}}/"
+    # Client ID for Synapse
+    client_id: "0000000000000000000SYNAPSE"
+    # Client auth method
+    client_auth_method: "client_secret_basic"
+    # Client secret for Synapse to authenticate with MAS
+    client_secret: "SynapseSecret"
+    # Admin token for MAS to call Synapse admin APIs
+    admin_token: "ThisTokenIsStaticallyConfiguredAndShouldNotBeUsedInProduction"
+    # Account management URL (redirects users to MAS)
+    account_management_url: "https://{{MATRIX_DOMAIN}}/account/"
+
+# Signing Keys
+signing_key_path: "/data/{{MATRIX_DOMAIN}}.signing.key"
+
+# Trusted key servers for federation
+trusted_key_servers:
+  - server_name: "matrix.org"
+
+# Logging
+log_config: "/data/{{MATRIX_DOMAIN}}.log.config"
+
+# Rate limiting
+rc_message:
+  per_second: 0.2
+  burst_count: 10
+
+rc_registration:
+  per_second: 0.17
+  burst_count: 3
+
+rc_login:
+  address:
+    per_second: 0.17
+    burst_count: 3
+  account:
+    per_second: 0.17
+    burst_count: 3
+  failed_attempts:
+    per_second: 0.17
+    burst_count: 3
+
+# Federation settings
+# Adjust based on your federation requirements
+federation_domain_whitelist: []  # Empty = allow all
+# federation_domain_whitelist:
+#   - matrix.org
+#   - example.com
+
+# Uncomment to disable federation entirely
+# federation_enabled: false
+
+# URL preview settings (optional)
+url_preview_enabled: false
+# url_preview_ip_range_blacklist:
+#   - '127.0.0.0/8'
+#   - '10.0.0.0/8'
+#   - '172.16.0.0/12'
+#   - '192.168.0.0/16'
+#   - '100.64.0.0/10'
+#   - '169.254.0.0/16'
+#   - '::1/128'
+#   - 'fe80::/64'
+#   - 'fc00::/7'
+
+# Email notifications (optional)
+# email:
+#   smtp_host: "smtp.example.com"
+#   smtp_port: 587
+#   smtp_user: "noreply@example.com"
+#   smtp_pass: "password"
+#   require_transport_security: true
+#   notif_from: "Matrix <noreply@example.com>"
+#   app_name: "Matrix"
+
+# Push notification settings
+# push:
+#   include_content: true
+
+# Room directory
+room_prejoin_state:
+  disable_default_event_types: false
+
+# Security
+suppress_key_server_warning: true
+
+# Report stats (optional - helps Matrix.org understand network)
+report_stats: false
+
+# Additional modules (optional)
+# modules: []
+
+# Worker mode (for scaling)
+# This is a single-process configuration
+# For high-traffic servers, consider worker mode
+# https://element-hq.github.io/synapse/latest/workers.html
+
+# Caching
+caches:
+  global_factor: 1.0
+  per_cache_factors: {}
+
+# Enable metrics for monitoring (optional)
+# enable_metrics: true
+# metrics_port: 9000
+
+# ============================================
+# Important Notes:
+# ============================================
+#
+# 1. {{MATRIX_DOMAIN}}: Replace with your Matrix server domain
+#
+# 2. {{POSTGRES_PASSWORD}}: MUST match the password in .env
+#    If you change the password in .env, you MUST update it here!
+#
+# 3. {{SYNAPSE_REGISTRATION_SHARED_SECRET}}: Used for creating admin users
+#    Keep this secret and secure!
+#
+# 4. MSC3861 Integration: This enables MAS to handle authentication
+#    Do not modify the client_id, client_secret, or admin_token
+#    unless you also update mas-config.yaml accordingly
+#
+# 5. Signing Key: Will be auto-generated on first run if not present
+#
+# 6. Log Config: Will be auto-generated on first run if not present
+#
+# ============================================

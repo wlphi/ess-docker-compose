@@ -1,0 +1,185 @@
+# Matrix Authentication Service (MAS) Configuration
+# Replace all {{PLACEHOLDER}} values with your actual configuration
+
+# HTTP listener configuration
+http:
+  listeners:
+    - name: web
+      bind: "0.0.0.0:8080"
+      proxy_protocol: false
+      resources:
+        - name: discovery
+        - name: human
+        - name: oauth
+        - name: compat
+        - name: graphql
+          playground: false
+        - name: assets
+
+# Database configuration
+database:
+  # PostgreSQL connection string
+  # Format: postgresql://user:password@host:port/database
+  uri: "postgresql://synapse:{{POSTGRES_PASSWORD}}@postgres:5432/synapse"
+  # Connection pool settings
+  min_connections: 5
+  max_connections: 10
+
+# Secrets configuration
+secrets:
+  # Encryption secret - MUST be exactly 32 bytes (64 hex characters)
+  # Generate with: openssl rand -hex 32
+  encryption: "{{MAS_SECRETS_ENCRYPTION}}"
+
+  # Keys secret - MUST be exactly 32 bytes (64 hex characters)
+  # Generate with: openssl rand -hex 32
+  keys:
+    - kid: "primary"
+      key: "{{MAS_SECRETS_KEYS}}"
+
+# Matrix homeserver configuration
+matrix:
+  homeserver: "{{MATRIX_DOMAIN}}"
+  # Secret token for MAS to call Synapse admin APIs
+  # MUST match admin_token in homeserver.yaml
+  secret: "ThisTokenIsStaticallyConfiguredAndShouldNotBeUsedInProduction"
+  # Endpoint for Synapse admin API
+  endpoint: "http://synapse:8008"
+
+# OIDC clients configuration
+clients:
+  # Synapse client - used by Synapse to authenticate with MAS
+  - client_id: "0000000000000000000SYNAPSE"
+    client_auth_method: "client_secret_basic"
+    client_secret: "SynapseSecret"
+
+# Branding configuration
+branding:
+  service_name: "Matrix Server"
+
+# Passwords configuration (for native MAS users)
+passwords:
+  enabled: true
+  schemes:
+    - version: 1
+      algorithm: "bcrypt"
+
+# Registration settings
+# matrix.registration controls who can create new accounts
+# If you want open registration, set enabled: true
+# For invite-only or admin-created users, set enabled: false
+# registration_requires_approval: true means admin must approve new accounts
+registration:
+  enabled: false
+  require_email: false
+
+# Account management features
+account:
+  email_change_allowed: true
+  display_name_change_allowed: true
+
+# Policy URLs (optional)
+# policy:
+#   terms_of_service:
+#     url: "https://{{MATRIX_DOMAIN}}/terms"
+#   privacy_policy:
+#     url: "https://{{MATRIX_DOMAIN}}/privacy"
+
+# Email configuration (optional)
+# Required if you want email verification, password resets, etc.
+# email:
+#   from: "noreply@{{MATRIX_DOMAIN}}"
+#   reply_to: "support@{{MATRIX_DOMAIN}}"
+#   transport: smtp
+#   smtp:
+#     mode: plain
+#     hostname: "smtp.example.com"
+#     port: 587
+#     username: "noreply@{{MATRIX_DOMAIN}}"
+#     password: "smtp_password"
+
+# ============================================
+# Upstream OAuth2/OIDC Provider Configuration
+# ============================================
+# This section is OPTIONAL and only needed if you want to authenticate
+# users against an external identity provider like Authelia, Keycloak, etc.
+#
+# If NOT using upstream OAuth, comment out or remove this entire section!
+#
+# If using Authelia or another OIDC provider, uncomment and configure:
+
+# upstream_oauth2:
+#   providers:
+#     # Provider ID - used in URLs and internal references
+#     - id: "01J9XYGF0F3H4M5T6P8Q2V9W7Z"
+#       # Human-readable name shown to users
+#       display_name: "Sign in with Authelia"
+#       # Brand ID for styling (optional)
+#       # brand_id: "authelia"
+#       # Issuer URL - must match your OIDC provider's issuer
+#       issuer: "{{AUTHELIA_URL}}"
+#       # Authorization endpoint (usually auto-discovered)
+#       # authorization_endpoint: "{{AUTHELIA_URL}}/api/oidc/authorization"
+#       # Token endpoint (usually auto-discovered)
+#       # token_endpoint: "{{AUTHELIA_URL}}/api/oidc/token"
+#       # JWKS URI (usually auto-discovered)
+#       # jwks_uri: "{{AUTHELIA_URL}}/jwks.json"
+#       # Client ID - must match the client configured in Authelia
+#       client_id: "{{AUTHELIA_CLIENT_ID}}"
+#       # Client secret - must match the secret configured in Authelia
+#       client_secret: "{{AUTHELIA_CLIENT_SECRET}}"
+#       # Client authentication method
+#       token_endpoint_auth_method: "client_secret_post"
+#       # Signing algorithm
+#       token_endpoint_auth_signing_alg: "RS256"
+#       # PKCE method
+#       pkce_method: "auto"
+#       # Scopes to request
+#       scope: "openid profile email"
+#       # Claims mapping
+#       claims_imports:
+#         # How to match the user from the upstream provider
+#         localpart:
+#           action: require
+#           template: "{{ user.preferred_username }}"
+#         # Display name
+#         displayname:
+#           action: suggest
+#           template: "{{ user.name }}"
+#         # Email
+#         email:
+#           action: suggest
+#           template: "{{ user.email }}"
+#           set_email_verification: import
+
+# ============================================
+# Important Notes:
+# ============================================
+#
+# 1. Secrets must be EXACTLY 64 hex characters (32 bytes)
+#    Generate with: openssl rand -hex 32
+#
+# 2. Database password MUST match POSTGRES_PASSWORD in .env
+#    and the password in homeserver.yaml
+#
+# 3. Matrix secret and Synapse client credentials MUST match
+#    the values in homeserver.yaml (msc3861 section)
+#
+# 4. If using upstream OAuth (Authelia):
+#    - Uncomment the entire upstream_oauth2 section
+#    - Replace all {{AUTHELIA_*}} placeholders
+#    - Ensure redirect URI in Authelia is: https://{{MATRIX_DOMAIN}}/oauth2/callback
+#    - Client secret in Authelia must be hashed with pbkdf2
+#
+# 5. The provider ID in upstream_oauth2 can be any unique string
+#    We use a ULID format for uniqueness, but any string works
+#
+# 6. Discovery is automatic for OIDC providers
+#    You usually don't need to specify endpoints manually
+#
+# 7. Registration settings:
+#    - enabled: false = only admins can create users
+#    - enabled: true = users can self-register
+#    - require_email: true = email verification required
+#
+# ============================================

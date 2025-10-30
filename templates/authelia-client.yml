@@ -1,0 +1,174 @@
+# Authelia OIDC Client Configuration for Matrix Authentication Service
+# Add this to your Authelia configuration.yml under identity_providers.oidc.clients
+
+# ============================================
+# Instructions:
+# ============================================
+# 1. Copy this entire block into your Authelia configuration.yml
+#    Location: /etc/authelia/configuration.yml (or your config path)
+#    Section: identity_providers → oidc → clients (it's an array)
+#
+# 2. Replace all {{PLACEHOLDER}} values with your actual configuration
+#
+# 3. Generate a hashed client secret:
+#    Run on your Authelia server:
+#    authelia crypto hash generate pbkdf2 --password 'YOUR_CLIENT_SECRET'
+#
+# 4. Restart Authelia:
+#    docker restart authelia
+#    # or
+#    systemctl restart authelia
+#
+# 5. Test the configuration:
+#    Visit https://{{MATRIX_DOMAIN}} and try logging in
+# ============================================
+
+  # Matrix Authentication Service (MAS) Client
+  - client_id: matrix_mas
+    client_name: Matrix Server
+
+    # Client secret (MUST be hashed with pbkdf2)
+    # Generate hash with: authelia crypto hash generate pbkdf2 --password 'YOUR_SECRET'
+    # The plaintext secret must match {{AUTHELIA_CLIENT_SECRET}} in your MAS config
+    client_secret: {{HASHED_CLIENT_SECRET}}
+
+    # Public client = false (we use client authentication)
+    public: false
+
+    # Authorization policy
+    # Options:
+    #   one_factor: Requires username + password
+    #   two_factor: Requires username + password + 2FA
+    authorization_policy: one_factor
+
+    # Redirect URIs - CRITICAL: Must match exactly!
+    # MAS will redirect users here after authentication
+    redirect_uris:
+      - https://{{MATRIX_DOMAIN}}/oauth2/callback
+
+    # Scopes that this client can request
+    scopes:
+      - openid
+      - profile
+      - email
+
+    # Response types supported
+    response_types:
+      - code
+
+    # Response modes supported
+    response_modes:
+      - form_post
+      - query
+      - fragment
+
+    # Grant types supported
+    grant_types:
+      - authorization_code
+      - refresh_token
+
+    # Token endpoint authentication method
+    token_endpoint_auth_method: client_secret_post
+
+    # User consent settings
+    # Options:
+    #   implicit: No consent screen, auto-approve
+    #   explicit: Show consent screen on first login
+    #   pre-configured: Use pre-configured consent (advanced)
+    consent_mode: implicit
+
+    # Pre-configured consent (optional)
+    # If using consent_mode: pre-configured, uncomment this:
+    # pre_configured_consent_duration: 1y
+
+# ============================================
+# Example with Hashed Secret:
+# ============================================
+# If your plaintext secret is: "supersecretpassword123"
+# Run: authelia crypto hash generate pbkdf2 --password 'supersecretpassword123'
+# Output: $pbkdf2-sha512$310000$...
+#
+# Then your configuration would look like:
+#
+# - client_id: matrix_mas
+#   client_name: Matrix Server
+#   client_secret: $pbkdf2-sha512$310000$c8p78n7pUMln0jzvd4aK4Q$JNRBzwAo0ek5qKn50cFzzvE9RXV88h1wJn5KGiHrD0YKtZaR
+#   public: false
+#   authorization_policy: one_factor
+#   redirect_uris:
+#     - https://matrix.example.com/oauth2/callback
+#   scopes:
+#     - openid
+#     - profile
+#     - email
+#   response_types:
+#     - code
+#   response_modes:
+#     - form_post
+#     - query
+#     - fragment
+#   grant_types:
+#     - authorization_code
+#     - refresh_token
+#   token_endpoint_auth_method: client_secret_post
+#   consent_mode: implicit
+
+# ============================================
+# Troubleshooting:
+# ============================================
+#
+# Issue: "Invalid redirect URI"
+# Solution: Ensure the redirect_uri in Authelia EXACTLY matches:
+#   https://{{MATRIX_DOMAIN}}/oauth2/callback
+#   No trailing slashes, correct protocol (https)
+#
+# Issue: "Invalid client authentication"
+# Solution: Verify client_secret hash was generated correctly
+#   and matches the plaintext secret in MAS config
+#
+# Issue: "Insufficient scope"
+# Solution: Ensure scopes include at least: openid, profile, email
+#
+# Issue: Users can't log in after Authelia authentication
+# Solution: Check that:
+#   1. MAS can reach Authelia (network connectivity)
+#   2. Claims mapping in MAS config is correct
+#   3. Authelia is returning expected claims (check Authelia logs)
+#
+# Issue: "Authorization policy denied"
+# Solution: Check Authelia's access control rules (configuration.yml)
+#   Ensure users have access to the Matrix client
+#
+# ============================================
+# Full Authelia Configuration Example:
+# ============================================
+#
+# identity_providers:
+#   oidc:
+#     # OIDC issuer configuration
+#     issuer_private_key: /config/oidc-issuer-key.pem
+#
+#     # Clients
+#     clients:
+#       # Your Matrix client (from this file)
+#       - client_id: matrix_mas
+#         client_name: Matrix Server
+#         # ... rest of config from above
+#
+#       # Other OIDC clients...
+#       - client_id: another_app
+#         # ...
+#
+# ============================================
+# Security Notes:
+# ============================================
+#
+# 1. NEVER commit the plaintext client secret to version control
+# 2. Use a strong, randomly generated client secret (32+ characters)
+# 3. Consider using two_factor for authorization_policy in production
+# 4. Regularly rotate client secrets (update both Authelia and MAS)
+# 5. Monitor Authelia logs for suspicious authentication attempts
+# 6. Use explicit consent_mode if you want users to review permissions
+# 7. Keep Authelia updated for security patches
+#
+# ============================================

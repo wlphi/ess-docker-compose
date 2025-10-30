@@ -1,270 +1,181 @@
-# Matrix Communication Stack with HTTPS & SSO
+# Matrix Server - Docker Compose Setup
 
-Complete self-hosted Matrix homeserver with optional Authelia SSO, automated HTTPS, and messaging bridges.
+A complete, production-ready Matrix server stack with modern authentication and web client.
 
 ## What's Included
 
-- **Matrix Synapse** - Homeserver
-- **Element Web** - Web client
-- **Matrix Authentication Service (MAS)** - OIDC authentication
-- **Authelia** (Optional) - SSO with 2FA support
-- **Caddy** - Automatic HTTPS (Let's Encrypt for production, self-signed for local)
+- **Synapse** - Matrix homeserver
+- **Matrix Authentication Service (MAS)** - Modern OIDC-based authentication
+- **Element Web** - Web client interface
+- **Element Admin** - Admin dashboard
 - **PostgreSQL** - Database backend
-- **Redis** (Optional) - Authelia session storage
-- **Bridges** - Telegram, WhatsApp, Signal integration (requires post-deployment setup)
+- **Caddy** - Reverse proxy with automatic HTTPS
 
-## Quick Start - Local Testing
+## Features
 
-### 1. Configure Hosts File
+- Clean template-based configuration
+- Optional upstream OIDC integration (Authelia, Keycloak, etc.)
+- Separate or combined deployment options
+- Comprehensive documentation
+- Production-ready security defaults
 
-Add to `/etc/hosts`:
+## Quick Start
 
-```bash
-127.0.0.1  matrix.example.test element.example.test auth.example.test authelia.example.test
-::1        matrix.example.test element.example.test auth.example.test authelia.example.test
-```
+1. **Copy templates and configure:**
+   ```bash
+   cp templates/docker-compose.yml .
+   cp templates/.env.template .env
+   cp templates/homeserver.yaml synapse/config/
+   cp templates/mas-config.yaml mas/config/
+   cp templates/element-config.json element/config/
+   ```
 
-**Note:** Both IPv4 and IPv6 entries are required. See [BUGFIXES.md](BUGFIXES.md) Issue #10 for details.
+2. **Follow the setup guide:**
 
-### 2. Run Deployment Script
+   See **[SETUP.md](SETUP.md)** for complete step-by-step instructions including:
+   - Secret generation
+   - Configuration placeholders
+   - DNS setup
+   - Reverse proxy configuration
+   - First user creation
+   - Troubleshooting
 
-```bash
-chmod +x deploy.sh
-./deploy.sh
-```
-
-Choose:
-- **Deployment type**: Local
-- **Include Authelia?**: Yes (for SSO with 2FA) or No (simpler, MAS-only auth)
-
-The script will:
-- Generate all secrets and passwords
-- Configure all services
-- Start Docker stack
-- Display access URLs and credentials
-
-**⚠️ Save the admin password shown at the end!**
-
-### 3. Access Services
-
-| Service | URL |
-|---------|-----|
-| Element Web | https://element.example.test |
-| Matrix API | https://matrix.example.test |
-| MAS Auth | https://auth.example.test |
-| Authelia SSO | https://authelia.example.test |
-
-**Note:** You'll see security warnings for self-signed certificates. Accept them to proceed (this is expected for local testing).
-
-### 4. Sign In
-
-1. Open https://element.example.test
-2. Click "Sign In"
-3. Login with credentials from deployment script
-4. Set up 2FA if using Authelia
-
-### 5. Configure Bridges (Optional)
-
-```bash
-./setup-bridges.sh
-```
-
-Then message the bridge bots in Element to link your accounts:
-- Telegram: `@telegrambot:matrix.example.test`
-- WhatsApp: `@whatsappbot:matrix.example.test`
-- Signal: `@signalbot:matrix.example.test`
-
-See [BRIDGE_SETUP_GUIDE.md](BRIDGE_SETUP_GUIDE.md) for details.
-
-## Production Deployment
-
-See [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) for:
-- Single-machine and multi-machine architectures
-- Let's Encrypt automatic HTTPS
-- Security hardening
-- Backup strategies
-- Monitoring and maintenance
-
-**Deploy command:**
-```bash
-# Multi-machine (default) - Matrix server only, Caddy/Authelia on separate machines
-docker compose up -d
-
-# Single-machine with Authelia - Everything on one server
-docker compose --profile single-machine --profile authelia up -d
-
-# Single-machine without Authelia
-docker compose --profile single-machine up -d
-```
-
-## Authentication Options
-
-### With Authelia (Recommended)
-- SSO with 2FA (TOTP)
-- Centralized user management
-- Works with LDAP or flat files
-
-### Without Authelia (Simpler)
-- MAS handles authentication directly
-- No upstream OAuth provider
-- Fewer dependencies
+3. **Start the stack:**
+   ```bash
+   docker compose up -d
+   ```
 
 ## Architecture
 
 ```
-Browser (HTTPS)
+Internet (HTTPS)
     ↓
-Caddy (Port 443) - Automatic HTTPS
+Caddy Reverse Proxy
     ↓
-┌─────────┬──────────┬─────────┬──────────┐
-│ Element │ Synapse  │   MAS   │ Authelia │
-│   Web   │  :8008   │  :8080  │  :9091   │
-└─────────┴────┬─────┴────┬────┴────┬─────┘
-               │          │         │
-               │          │    ┌────▼────┐
-               │          │    │  Redis  │
-               │          │    └─────────┘
-               │          │
-           ┌───▼──────────▼─────┐
-           │    PostgreSQL      │
-           └────────────────────┘
-
-Bridges (Internal Network):
-├── Telegram (mautrix-telegram)
-├── WhatsApp (mautrix-whatsapp)
-└── Signal (mautrix-signal)
+┌─────────────────────────────────────────┐
+│  Matrix Stack                           │
+│  ┌──────────┬──────────┬──────────┐    │
+│  │ Element  │ Synapse  │   MAS    │    │
+│  │   Web    │  :8008   │  :8080   │    │
+│  └──────────┴─────┬────┴─────┬────┘    │
+│                   │          │          │
+│              ┌────▼──────────▼────┐    │
+│              │   PostgreSQL       │    │
+│              └────────────────────┘    │
+└─────────────────────────────────────────┘
 ```
 
 ## Documentation
 
-- **[PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md)** - Production deployment guide
-- **[BRIDGE_SETUP_GUIDE.md](BRIDGE_SETUP_GUIDE.md)** - Bridge configuration explained
-- **[BUGFIXES.md](BUGFIXES.md)** - Critical issues and solutions (10 documented issues)
-- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Common operations reference
+- **[SETUP.md](SETUP.md)** - Complete setup guide with all configuration details
+- **templates/** - Clean configuration templates for all services
 
-## Data Directories
+## Authentication Options
 
-All persistent data stored in:
+### MAS Only (Default)
+- Built-in authentication via Matrix Authentication Service
+- User accounts managed within Matrix
+- Simpler setup, fewer dependencies
 
-```
-postgres/data/     - Database
-synapse/data/      - Synapse data & media
-mas/data/          - MAS session data
-bridges/*/config/  - Bridge configurations & sessions
-authelia/config/   - Authelia config & users
-caddy/data/        - SSL certificates (production)
-```
+### With Upstream OIDC (Optional)
+- Integrate with existing identity providers (Authelia, Keycloak, etc.)
+- Centralized authentication across services
+- Single Sign-On (SSO) support
 
-**These directories are in `.gitignore` to protect sensitive data.**
+See [SETUP.md](SETUP.md) Step 5 for OIDC configuration.
 
-## Common Commands
+## Configuration Templates
+
+The `templates/` directory contains:
+
+- `docker-compose.yml` - Service orchestration
+- `.env.template` - Environment variables with secret generation guidance
+- `homeserver.yaml` - Synapse configuration
+- `mas-config.yaml` - MAS configuration with optional OIDC
+- `element-config.json` - Element Web client configuration
+- `Caddyfile` - Reverse proxy configuration
+- `authelia-client.yml` - Example OIDC client config for Authelia
+
+All templates use `{{PLACEHOLDER}}` format for easy find-and-replace.
+
+## Deployment Scenarios
+
+### Single Server
+Run everything (Matrix + Caddy) on one machine.
+
+### Multi-Server
+- Matrix stack on dedicated server
+- Caddy reverse proxy on separate edge server
+- Optional: Authelia on separate authentication server
+
+See [SETUP.md](SETUP.md) Step 7 for details.
+
+## Requirements
+
+- Docker and Docker Compose
+- Domain name with DNS configured
+- Ports 80, 443 accessible (for HTTPS/certificates)
+
+## Common Operations
 
 ```bash
-# Check services
+# Check service status
 docker compose ps
 
 # View logs
 docker compose logs -f
 
-# View specific service logs
-docker compose logs synapse --tail 50
+# Restart services
+docker compose restart
 
-# Restart service
-docker compose restart synapse
-
-# Stop everything
+# Stop all services
 docker compose down
 
-# Start fresh (⚠️ deletes all data)
-docker compose down -v
-rm -rf postgres/data synapse/data mas/data
+# Update images
+docker compose pull
+docker compose up -d
 ```
 
-## Troubleshooting
+## Security
 
-### Services Won't Start After Update
+- HTTPS enforced via Caddy with automatic Let's Encrypt certificates
+- Strong secret generation required (see SETUP.md Step 2)
+- Database passwords must be synchronized across configs
+- Admin interface access should be restricted by IP
 
-If PostgreSQL password mismatch occurs (see BUGFIXES.md Issue #9):
-
-```bash
-# Stop services
-docker compose stop
-
-# Remove old PostgreSQL data
-sudo rm -rf postgres/data
-
-# Re-run deployment
-./deploy.sh
-```
-
-### Element Can't Connect
-
-Check MAS delegation:
-```bash
-curl -k https://matrix.example.test/.well-known/matrix/client
-```
-
-Should return authentication issuer URL.
-
-### Bridges Not Working
-
-1. Run `./setup-bridges.sh` if not done already
-2. Check bridge logs: `docker compose logs mautrix-telegram`
-3. See [BRIDGE_SETUP_GUIDE.md](BRIDGE_SETUP_GUIDE.md) for chicken-and-egg problem explanation
+See [SETUP.md](SETUP.md) for security considerations and hardening.
 
 ## Backup
 
+Essential data directories:
+```
+postgres/data/    - Database
+synapse/data/     - Synapse media and state
+mas/data/         - MAS sessions
+.env              - Secrets and configuration
+```
+
+Backup command:
 ```bash
 tar -czf matrix-backup-$(date +%Y%m%d).tar.gz \
   postgres/data \
   synapse/data \
   mas/data \
-  authelia/config \
-  bridges/*/config \
   .env
 ```
 
-## Security Notes
+## Support
 
-### For Local Testing
-- Self-signed certificates (expected security warnings)
-- Default test domain (example.test)
-- Generated passwords (save from deploy script output)
-
-### For Production
-- Use real domain names
-- Let's Encrypt automatic HTTPS
-- Change all default passwords
-- Enable 2FA in Authelia
-- Configure firewall rules
-- Regular updates and backups
-
-See [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) Security Hardening section.
-
-## Deployment Variants
-
-| Mode | Certificates | DNS | Authelia | Command |
-|------|--------------|-----|----------|---------|
-| Local | Self-signed | /etc/hosts | Optional | `./deploy.sh` → Local |
-| Production | Let's Encrypt | Real DNS | Optional | `./deploy.sh` → Production |
-
-## Scripts
-
-- **deploy.sh** - Main deployment automation
-- **setup-bridges.sh** - Bridge configuration automation
-
-## Resources
-
-- [Matrix Synapse Docs](https://element-hq.github.io/synapse/)
-- [MAS Docs](https://element-hq.github.io/matrix-authentication-service/)
-- [Authelia Docs](https://www.authelia.com/)
-- [Mautrix Docs](https://docs.mau.fi/)
+- **Matrix Synapse**: https://github.com/element-hq/synapse
+- **MAS**: https://github.com/element-hq/matrix-authentication-service
+- **Element Web**: https://github.com/element-hq/element-web
+- **Setup Issues**: See [SETUP.md](SETUP.md) Troubleshooting section
 
 ## License
 
-Individual components retain their licenses:
+This setup uses the following open-source components:
 - Matrix Synapse: Apache 2.0
-- Element: Apache 2.0
-- MAS: Apache 2.0
-- Authelia: Apache 2.0
-- Mautrix bridges: AGPL-3.0
+- Matrix Authentication Service: Apache 2.0
+- Element Web: Apache 2.0
+- PostgreSQL: PostgreSQL License
+- Caddy: Apache 2.0
