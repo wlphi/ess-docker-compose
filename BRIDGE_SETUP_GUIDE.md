@@ -111,6 +111,12 @@ appservice:
 bridge:
   permissions:
     'matrix.example.test': admin
+
+  # Enable encrypted bridge support (requires Synapse with MSC4190/MSC3202)
+  encryption:
+    allow: true
+    default: true
+    msc4190: true  # Enable MSC4190 device masquerading
 ```
 
 **WhatsApp (`bridges/whatsapp/config/config.yaml`):**
@@ -128,9 +134,36 @@ database:
 bridge:
   permissions:
     "matrix.example.test": admin
+
+  # Enable encrypted bridge support (requires Synapse with MSC4190/MSC3202)
+  encryption:
+    allow: true
+    default: true
+    msc4190: true  # Enable MSC4190 device masquerading
 ```
 
-**Signal (similar structure)**
+**Signal (`bridges/signal/config/config.yaml`):**
+```yaml
+homeserver:
+  address: http://synapse:8008
+  domain: matrix.example.test
+
+appservice:
+  address: http://mautrix-signal:29319
+
+database:
+  uri: postgres://synapse:PASSWORD@postgres/signal?sslmode=disable
+
+bridge:
+  permissions:
+    "matrix.example.test": admin
+
+  # Enable encrypted bridge support (requires Synapse with MSC4190/MSC3202)
+  encryption:
+    allow: true
+    default: true
+    msc4190: true  # Enable MSC4190 device masquerading
+```
 
 ###
 
@@ -159,6 +192,17 @@ ls -la bridges/*/config/registration.yaml
 # bridges/signal/config/registration.yaml
 # NOTE: Telegram may not generate registration.yaml - that's OK
 ```
+
+**IMPORTANT:** For encrypted bridge support (Synapse < 1.141), edit each registration.yaml file to add:
+
+```yaml
+# Add this to each registration.yaml file (only needed for Synapse < 1.141)
+io.element.msc4190: true
+```
+
+This enables MSC4190 device masquerading in the appservice registration.
+
+**Note**: On Synapse 1.141+, this flag is no longer necessary in registration.yaml, but you must still keep `msc4190: true` in the bridge config.
 
 ### Step 8: Configure Synapse
 
@@ -296,6 +340,41 @@ bridge:
     "your-domain.com": admin  # Domain-wide admin
     "@you:your-domain.com": admin  # Or specific user
 ```
+
+## Known Issue: Encrypted Bridges with MAS
+
+**CRITICAL**: As of Synapse 1.140.0, there is a known compatibility issue between encrypted bridges and Matrix Authentication Service (MAS).
+
+### The Problem
+- Encrypted bridges require **appservice login** authentication for MSC4190 device masquerading
+- When MAS is enabled, it takes over authentication from Synapse
+- MAS does not currently support appservice login authentication
+- **Result**: Encrypted bridges fail with `"homeserver does not support appservice login"` error
+
+### Symptoms
+- Bridge crashes during startup when encryption is enabled
+- Error message: `"failed to start Matrix connector: homeserver does not support appservice login"`
+- WhatsApp/Telegram may work (if not using encryption)
+- Signal bridge typically fails (often defaults to encryption)
+
+### Workaround Options
+
+**Option 1: Disable encryption in affected bridges**
+```yaml
+# In bridge config.yaml
+encryption:
+  allow: false
+  default: false
+  # Remove or comment out msc4190: true
+```
+
+**Option 2: Wait for MAS appservice login support**
+This is actively being developed. Check:
+- https://github.com/element-hq/matrix-authentication-service/issues/3206
+- Recent Synapse/MAS release notes
+
+**Option 3: Disable MAS temporarily**
+If encrypted bridges are critical, you may need to use Synapse's built-in authentication instead of MAS until this is resolved.
 
 ## Why This Is So Complex
 

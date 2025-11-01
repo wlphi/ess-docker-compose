@@ -41,17 +41,15 @@ secrets:
 matrix:
   homeserver: "{{MATRIX_DOMAIN}}"
   # Secret token for MAS to call Synapse admin APIs
-  # MUST match admin_token in homeserver.yaml
+  # MUST match 'secret' in matrix_authentication_service config in homeserver.yaml (Synapse 1.136+)
   secret: "ThisTokenIsStaticallyConfiguredAndShouldNotBeUsedInProduction"
   # Endpoint for Synapse admin API
   endpoint: "http://synapse:8008"
 
 # OIDC clients configuration
-clients:
-  # Synapse client - used by Synapse to authenticate with MAS
-  - client_id: "0000000000000000000SYNAPSE"
-    client_auth_method: "client_secret_basic"
-    client_secret: "SynapseSecret"
+# Note: With stable MAS integration (Synapse 1.136+), the Synapse OIDC client is no longer needed
+# Only define custom clients here if you have other OAuth applications
+clients: []
 
 # Branding configuration
 branding:
@@ -162,8 +160,9 @@ account:
 # 2. Database password MUST match POSTGRES_PASSWORD in .env
 #    and the password in homeserver.yaml
 #
-# 3. Matrix secret and Synapse client credentials MUST match
-#    the values in homeserver.yaml (msc3861 section)
+# 3. Matrix secret MUST match 'secret' in matrix_authentication_service
+#    section in homeserver.yaml (Synapse 1.136+)
+#    Old msc3861 OIDC client is no longer needed with stable config
 #
 # 4. If using upstream OAuth (Authelia):
 #    - Uncomment the entire upstream_oauth2 section

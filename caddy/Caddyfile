@@ -29,6 +29,26 @@ matrix.example.test:443 {
         respond `{"m.server":"matrix.example.test:443"}` 200
     }
 
+    # Rendezvous endpoints for QR code login (MSC4108)
+    # Must disable compression to preserve ETags
+    @rendezvous path_regexp rendezvous ^/_matrix/client/(unstable|v1)/org\.matrix\.(msc3886|msc4108)/rendezvous.*$
+    handle @rendezvous {
+        header Access-Control-Allow-Origin "*"
+        header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+        header Access-Control-Allow-Headers "Authorization, Content-Type, Accept, If-Match, If-None-Match"
+        header Vary "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+        # Disable compression to preserve ETag integrity
+        encode {
+            # explicitly disable all encodings
+        }
+        reverse_proxy synapse:8008 {
+            header_down -Access-Control-Allow-Origin
+            header_down -Access-Control-Allow-Methods
+            header_down -Access-Control-Allow-Headers
+            header_down -Vary
+        }
+    }
+
     # Client versions endpoint with CORS
     @versions path /_matrix/client/versions
     handle @versions {
@@ -241,5 +261,17 @@ element.example.test:443 {
     # Everything else to Element container
     handle {
         reverse_proxy element:80
+    }
+}
+
+# =========================
+# Element Admin
+# =========================
+admin.example.test:443 {
+    tls internal
+
+    # Proxy to Element Admin container
+    handle {
+        reverse_proxy element-admin:80
     }
 }

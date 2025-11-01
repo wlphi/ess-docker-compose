@@ -76,6 +76,20 @@ services:
     depends_on:
       - synapse
 
+  # Element Admin - Web UI for managing users/rooms via MAS
+  element-admin:
+    image: oci.element.io/element-admin:latest
+    container_name: matrix-element-admin
+    restart: unless-stopped
+    # Port published to host for multi-machine deployment
+    ports:
+      - "8091:80"  # Map container port 80 to host port 8091
+    networks:
+      - matrix-network
+    depends_on:
+      - synapse
+      - mas
+
   # Redis for Authelia session storage
   redis:
     profiles:

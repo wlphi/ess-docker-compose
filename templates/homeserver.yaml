@@ -44,23 +44,25 @@ registration_shared_secret: "{{SYNAPSE_REGISTRATION_SHARED_SECRET}}"
 # Allow guest access
 allow_guest_access: false
 
-# Experimental features for MAS integration
+# Matrix Authentication Service (MAS) integration (Synapse 1.136+)
+# Replaces deprecated experimental_features.msc3861
+matrix_authentication_service:
+  enabled: true
+  # Internal endpoint where Synapse contacts MAS
+  endpoint: "http://mas:8080"
+  # Shared secret - MUST match `matrix.secret` in MAS config
+  secret: "ThisTokenIsStaticallyConfiguredAndShouldNotBeUsedInProduction"
+
+# Experimental features
 experimental_features:
-  # Enable MSC3861 for Matrix Authentication Service integration
-  msc3861:
-    enabled: true
-    # MAS issuer URL
-    issuer: "https://{{MATRIX_DOMAIN}}/"
-    # Client ID for Synapse
-    client_id: "0000000000000000000SYNAPSE"
-    # Client auth method
-    client_auth_method: "client_secret_basic"
-    # Client secret for Synapse to authenticate with MAS
-    client_secret: "SynapseSecret"
-    # Admin token for MAS to call Synapse admin APIs
-    admin_token: "ThisTokenIsStaticallyConfiguredAndShouldNotBeUsedInProduction"
-    # Account management URL (redirects users to MAS)
-    account_management_url: "https://{{MATRIX_DOMAIN}}/account/"
+  # Enable QR code login (requires Synapse 1.106+)
+  # Transfers crypto identity without needing password/passphrase
+  msc4108_enabled: true
+
+  # Enable encrypted bridge support (added late 2024)
+  # Required for Mautrix bridges and similar
+  msc4190_enabled: true
+  msc3202_device_masquerading: true
 
 # Signing Keys
 signing_key_path: "/data/{{MATRIX_DOMAIN}}.signing.key"
@@ -168,9 +170,9 @@ caches:
 # 3. {{SYNAPSE_REGISTRATION_SHARED_SECRET}}: Used for creating admin users
 #    Keep this secret and secure!
 #
-# 4. MSC3861 Integration: This enables MAS to handle authentication
-#    Do not modify the client_id, client_secret, or admin_token
-#    unless you also update mas-config.yaml accordingly
+# 4. Matrix Authentication Service: Synapse 1.136+ uses stable MAS integration
+#    The 'secret' in matrix_authentication_service MUST match 'matrix.secret' in MAS config
+#    Old experimental_features.msc3861 is deprecated and removed in Synapse 1.137+
 #
 # 5. Signing Key: Will be auto-generated on first run if not present
 #

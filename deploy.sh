@@ -107,6 +107,12 @@ if [[ -n "$EXISTING_DATA" ]]; then
     echo -e "${GREEN}✓${NC} Preserving synapse/data/homeserver.yaml (custom configs maintained)"
     echo -e "${GREEN}✓${NC} Preserving mas/config (Authelia integration maintained)"
 
+    # Remove bridge registration references from homeserver.yaml
+    if [[ -f "synapse/data/homeserver.yaml" ]]; then
+        sudo sed -i '/^  - \/bridges\//d' synapse/data/homeserver.yaml
+        echo -e "${GREEN}✓${NC} Removed stale bridge registration references"
+    fi
+
     sudo rm -rf postgres/data
     sudo rm -rf mas/data mas/certs
     sudo rm -rf caddy/data caddy/config
@@ -184,6 +190,7 @@ if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
     AUTHELIA_COOKIE_DOMAIN="example.test"  # No leading dot for cookie domain
     MATRIX_DOMAIN="matrix.example.test"
     ELEMENT_DOMAIN="element.example.test"
+    ADMIN_DOMAIN="admin.example.test"
     AUTH_DOMAIN="auth.example.test"
     AUTHELIA_DOMAIN="authelia.example.test"
 
@@ -220,6 +227,11 @@ else
     read -p "Enter Element subdomain [default: element]: " ELEMENT_SUBDOMAIN
     ELEMENT_SUBDOMAIN=${ELEMENT_SUBDOMAIN:-element}
     ELEMENT_DOMAIN="${ELEMENT_SUBDOMAIN}.${DOMAIN_BASE}"
+
+    # Element Admin subdomain
+    read -p "Enter Element Admin subdomain [default: admin]: " ADMIN_SUBDOMAIN
+    ADMIN_SUBDOMAIN=${ADMIN_SUBDOMAIN:-admin}
+    ADMIN_DOMAIN="${ADMIN_SUBDOMAIN}.${DOMAIN_BASE}"
 
     # MAS subdomain
     read -p "Enter MAS/Auth subdomain [default: auth]: " AUTH_SUBDOMAIN
@@ -310,6 +322,7 @@ cat > .env << EOF
 DOMAIN_BASE=${DOMAIN_BASE}
 MATRIX_DOMAIN=${MATRIX_DOMAIN}
 ELEMENT_DOMAIN=${ELEMENT_DOMAIN}
+ADMIN_DOMAIN=${ADMIN_DOMAIN}
 AUTH_DOMAIN=${AUTH_DOMAIN}
 AUTHELIA_DOMAIN=${AUTHELIA_DOMAIN}
 SERVER_NAME=${MATRIX_DOMAIN}
@@ -649,6 +662,13 @@ clients:
       - 'https://${ELEMENT_DOMAIN}/mobile_guide/'
       - 'io.element.app:/callback'
 
+  # Element Admin (public - for admin UI)
+  - client_id: '01ADMIN000000000000000000'
+    client_auth_method: none
+    redirect_uris:
+      - 'https://${ADMIN_DOMAIN}/'
+      - 'https://${ADMIN_DOMAIN}'
+
   # Synapse client (confidential - for backend integration)
   - client_id: '0000000000000000000SYNAPSE'
     client_auth_method: client_secret_basic
@@ -908,7 +928,12 @@ ${MATRIX_DOMAIN} {
         header Access-Control-Allow-Origin "*"
         header Access-Control-Allow-Methods "GET, OPTIONS"
         header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
-        reverse_proxy ${MATRIX_SERVER_IP}:8008
+        reverse_proxy ${MATRIX_SERVER_IP}:8008 {
+            header_down -Access-Control-Allow-Origin
+            header_down -Access-Control-Allow-Methods
+            header_down -Access-Control-Allow-Headers
+            header_down -Vary
+        }
     }
 
     # CORS preflight
@@ -928,14 +953,24 @@ ${MATRIX_DOMAIN} {
     @compat path /_matrix/client/v3/login* /_matrix/client/v3/logout* /_matrix/client/v3/refresh* /_matrix/client/r0/login* /_matrix/client/r0/logout* /_matrix/client/r0/refresh*
     handle @compat {
         header Access-Control-Allow-Origin "*"
-        reverse_proxy ${MATRIX_SERVER_IP}:8080
+        reverse_proxy ${MATRIX_SERVER_IP}:8080 {
+            header_down -Access-Control-Allow-Origin
+            header_down -Access-Control-Allow-Methods
+            header_down -Access-Control-Allow-Headers
+            header_down -Vary
+        }
     }
 
     # Everything else to Synapse
     @matrix_rest path_regexp matrix ^/_matrix/.*$
     handle @matrix_rest {
         header Access-Control-Allow-Origin "*"
-        reverse_proxy ${MATRIX_SERVER_IP}:8008
+        reverse_proxy ${MATRIX_SERVER_IP}:8008 {
+            header_down -Access-Control-Allow-Origin
+            header_down -Access-Control-Allow-Methods
+            header_down -Access-Control-Allow-Headers
+            header_down -Vary
+        }
     }
 
     handle {
@@ -996,6 +1031,16 @@ ${ELEMENT_DOMAIN} {
 
     handle {
         reverse_proxy ${MATRIX_SERVER_IP}:8090
+    }
+}
+
+# =========================
+# Element Admin
+# =========================
+${ADMIN_DOMAIN} {
+    # Proxy to Element Admin
+    handle {
+        reverse_proxy ${MATRIX_SERVER_IP}:8091
     }
 }
 EOF

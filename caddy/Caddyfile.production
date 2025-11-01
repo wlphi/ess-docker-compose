@@ -34,7 +34,7 @@ matrix.{$DOMAIN}:443 {
         respond `{"m.server":"matrix.{$DOMAIN}:443"}` 200
     }
 
-    # Client versions endpoint with CORS
+    # Client versions endpoint with CORS - strip backend headers to prevent duplicates
     @versions path /_matrix/client/versions
     handle @versions {
         header Access-Control-Allow-Origin "*"
@@ -251,5 +251,17 @@ element.{$DOMAIN}:443 {
     # Everything else to Element container
     handle {
         reverse_proxy element:80
+    }
+}
+
+# =========================
+# Element Admin
+# =========================
+admin.{$DOMAIN}:443 {
+    # Automatic HTTPS with Let's Encrypt
+
+    # Proxy to Element Admin container
+    handle {
+        reverse_proxy element-admin:80
     }
 }
