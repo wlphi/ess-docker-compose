@@ -1,5 +1,7 @@
 # Matrix Bridge Setup Guide
 
+**IMPORTANT**: This setup uses Matrix Authentication Service (MAS) for authentication. As of Synapse 1.140.0, **bridge encryption is NOT compatible with MAS** due to missing appservice login support. All bridge configurations in this guide have encryption disabled.
+
 ## The Bridge Registration Problem (CRITICAL)
 
 ### Chicken-and-Egg Issue
@@ -112,11 +114,11 @@ bridge:
   permissions:
     'matrix.example.test': admin
 
-  # Enable encrypted bridge support (requires Synapse with MSC4190/MSC3202)
+  # Bridge encryption disabled - incompatible with MAS
+  # See "Known Issue: Encrypted Bridges with MAS" section below
   encryption:
-    allow: true
-    default: true
-    msc4190: true  # Enable MSC4190 device masquerading
+    allow: false
+    default: false
 ```
 
 **WhatsApp (`bridges/whatsapp/config/config.yaml`):**
@@ -135,11 +137,11 @@ bridge:
   permissions:
     "matrix.example.test": admin
 
-  # Enable encrypted bridge support (requires Synapse with MSC4190/MSC3202)
+  # Bridge encryption disabled - incompatible with MAS
+  # See "Known Issue: Encrypted Bridges with MAS" section below
   encryption:
-    allow: true
-    default: true
-    msc4190: true  # Enable MSC4190 device masquerading
+    allow: false
+    default: false
 ```
 
 **Signal (`bridges/signal/config/config.yaml`):**
@@ -158,11 +160,11 @@ bridge:
   permissions:
     "matrix.example.test": admin
 
-  # Enable encrypted bridge support (requires Synapse with MSC4190/MSC3202)
+  # Bridge encryption disabled - incompatible with MAS
+  # See "Known Issue: Encrypted Bridges with MAS" section below
   encryption:
-    allow: true
-    default: true
-    msc4190: true  # Enable MSC4190 device masquerading
+    allow: false
+    default: false
 ```
 
 ###
@@ -193,16 +195,7 @@ ls -la bridges/*/config/registration.yaml
 # NOTE: Telegram may not generate registration.yaml - that's OK
 ```
 
-**IMPORTANT:** For encrypted bridge support (Synapse < 1.141), edit each registration.yaml file to add:
-
-```yaml
-# Add this to each registration.yaml file (only needed for Synapse < 1.141)
-io.element.msc4190: true
-```
-
-This enables MSC4190 device masquerading in the appservice registration.
-
-**Note**: On Synapse 1.141+, this flag is no longer necessary in registration.yaml, but you must still keep `msc4190: true` in the bridge config.
+**Note about registration.yaml:** The generated files should work as-is. Do not add MSC4190/MSC3202 flags since encryption is disabled in this MAS-based setup.
 
 ### Step 8: Configure Synapse
 
