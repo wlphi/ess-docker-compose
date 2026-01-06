@@ -32,6 +32,7 @@ services:
       - ./synapse/data:/data
       - ./mas/certs:/certs:ro
       - ./bridges:/bridges:ro
+      - ./appservices:/appservices:ro
     # Ports exposed only to internal network - access via Caddy
     expose:
       - "8008"

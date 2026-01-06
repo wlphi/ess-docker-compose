@@ -58,11 +58,15 @@ experimental_features:
   # Enable QR code login (requires Synapse 1.106+)
   # Transfers crypto identity without needing password/passphrase
   msc4108_enabled: true
+  msc3882_enabled: true
 
-  # Enable encrypted bridge support (added late 2024)
-  # Required for Mautrix bridges and similar
+  # Bridge encryption features (experimental)
+  # NOTE: As of Synapse 1.144.0, MSC4190 has compatibility issues with MAS
+  # Keep these enabled for future compatibility, but bridges should disable encryption for now
   msc4190_enabled: true
   msc3202_device_masquerading: true
+  msc3202_transaction_extensions: true
+  msc2409_to_device_messages_enabled: true
 
 # Signing Keys
 signing_key_path: "/data/{{MATRIX_DOMAIN}}.signing.key"
@@ -157,6 +161,15 @@ caches:
 # Enable metrics for monitoring (optional)
 # enable_metrics: true
 # metrics_port: 9000
+
+# Appservice Configuration (optional - for bridges)
+# Uncomment and configure after setting up bridges
+# See BRIDGE_SETUP_GUIDE.md for detailed setup instructions
+# app_service_config_files:
+#   - /appservices/doublepuppet.yaml
+#   - /bridges/whatsapp/config/registration.yaml
+#   - /bridges/signal/config/registration.yaml
+#   - /bridges/telegram/config/registration.yaml
 
 # ============================================
 # Important Notes:

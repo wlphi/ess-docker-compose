@@ -369,6 +369,221 @@ This is actively being developed. Check:
 **Option 3: Disable MAS temporarily**
 If encrypted bridges are critical, you may need to use Synapse's built-in authentication instead of MAS until this is resolved.
 
+## Solution: Double Puppet and Unencrypted Rooms
+
+While bridge encryption is incompatible with MAS, you can still achieve good message attribution using **double puppet** with unencrypted Matrix rooms. This is the recommended production-ready workaround.
+
+### What is Double Puppet?
+
+Double puppet allows bridges to send messages **as if they came from your actual Matrix user**, rather than from a bot account. This provides:
+- Better message attribution (messages appear from you, not a bot)
+- Improved user experience
+- Works reliably without encryption issues
+
+### Setting Up Double Puppet (Stable Solution)
+
+#### Step 1: Generate Secure Tokens
+
+```bash
+# Generate tokens for the double puppet appservice
+AS_TOKEN=$(openssl rand -hex 32)
+HS_TOKEN=$(openssl rand -hex 32)
+
+# Save these for later use
+echo "AS_TOKEN: $AS_TOKEN"
+echo "HS_TOKEN: $HS_TOKEN"
+```
+
+#### Step 2: Create Double Puppet Appservice
+
+Create `appservices/doublepuppet.yaml`:
+
+```yaml
+id: doublepuppet
+url: ""
+as_token: "YOUR_AS_TOKEN_HERE"
+hs_token: "YOUR_HS_TOKEN_HERE"
+sender_localpart: doublepuppet
+rate_limited: false
+
+namespaces:
+  users:
+    - regex: "@.*:YOUR-DOMAIN.COM"
+      exclusive: false
+```
+
+Replace:
+- `YOUR_AS_TOKEN_HERE` with the AS_TOKEN you generated
+- `YOUR_HS_TOKEN_HERE` with the HS_TOKEN you generated
+- `YOUR-DOMAIN.COM` with your actual Matrix domain
+
+Set permissions:
+```bash
+chmod 644 appservices/doublepuppet.yaml
+```
+
+#### Step 3: Register Double Puppet in Synapse
+
+Edit `synapse/data/homeserver.yaml` and add:
+
+```yaml
+app_service_config_files:
+  - /appservices/doublepuppet.yaml
+  - /bridges/whatsapp/config/registration.yaml
+  - /bridges/signal/config/registration.yaml
+  - /bridges/telegram/config/registration.yaml
+```
+
+Ensure the appservices directory is mounted in your Synapse container:
+
+```yaml
+synapse:
+  volumes:
+    - ./synapse/data:/data
+    - ./bridges:/bridges:ro
+    - ./appservices:/appservices:ro  # Add this line
+```
+
+#### Step 4: Configure Bridges with Double Puppet
+
+**WhatsApp** (`bridges/whatsapp/config/config.yaml`):
+```yaml
+bridge:
+  double_puppet:
+    secrets:
+      your-domain.com: as_token:YOUR_AS_TOKEN_HERE
+
+  # Disable encryption (not compatible with MAS)
+  encryption:
+    allow: false
+    default: false
+    msc4190: false
+    self_sign: false
+    allow_key_sharing: true
+```
+
+**Signal** (`bridges/signal/config/config.yaml`):
+```yaml
+bridge:
+  double_puppet:
+    secrets:
+      your-domain.com: as_token:YOUR_AS_TOKEN_HERE
+
+  # Disable encryption (not compatible with MAS)
+  encryption:
+    allow: false
+    default: false
+    msc4190: false
+    self_sign: false
+    allow_key_sharing: true
+```
+
+**Telegram** (`bridges/telegram/config/config.yaml`):
+```yaml
+bridge:
+  login_shared_secret_map:
+    your-domain.com: as_token:YOUR_AS_TOKEN_HERE
+
+  # Disable encryption (not compatible with MAS)
+  encryption:
+    allow: false
+    default: false
+```
+
+Replace:
+- `your-domain.com` with your Matrix domain
+- `YOUR_AS_TOKEN_HERE` with your AS_TOKEN
+
+#### Step 5: Update Bridge Registration Files (For Future)
+
+While encryption is disabled, you can add MSC4190 flags to registration files for future compatibility:
+
+For each `bridges/*/config/registration.yaml`, ensure these lines exist:
+```yaml
+de.sorunome.msc2409.push_ephemeral: true
+receive_ephemeral: true
+io.element.msc4190: true  # For future encryption support
+```
+
+#### Step 6: Restart Services
+
+```bash
+# Restart Synapse to load double puppet appservice
+docker restart matrix-synapse
+sleep 15
+
+# Restart all bridges
+docker restart matrix-bridge-whatsapp matrix-bridge-signal matrix-bridge-telegram
+sleep 10
+```
+
+#### Step 7: Clear Portal Database (Forces Room Recreatio)
+
+To ensure bridges create new unencrypted rooms with double puppet:
+
+```bash
+# Clear WhatsApp portals
+docker exec matrix-postgres psql -U synapse -d whatsapp -c "DELETE FROM portal;"
+docker restart matrix-bridge-whatsapp
+
+# Clear Signal portals (if needed)
+docker exec matrix-postgres psql -U synapse -d signal -c "DELETE FROM portal;"
+docker restart matrix-bridge-signal
+
+# Clear Telegram portals (if needed)
+docker exec matrix-postgres psql -U synapse -d telegram -c "DELETE FROM portal;"
+docker restart matrix-bridge-telegram
+```
+
+**Note**: This will cause bridges to create new Matrix rooms for existing chats. Old rooms will remain but won't receive new messages.
+
+### What You Get
+
+✅ **Working**:
+- Bridge connected to WhatsApp/Signal/Telegram
+- Double puppet configured (better message attribution)
+- Messages work in **unencrypted** Matrix rooms (both directions)
+- Messages appear from your actual user, not bot
+
+❌ **Not Working** (Known Issue):
+- Encrypted Matrix rooms → Synapse NotImplementedError with MAS + MSC4190
+
+### Future: When Synapse Fixes MSC4190 + MAS
+
+When Synapse fixes the MSC4190 + MAS compatibility issue:
+
+1. Update bridge configs:
+   ```yaml
+   encryption:
+     allow: true
+     default: false  # Or true if you want encryption by default
+     msc4190: true
+     self_sign: true
+   ```
+
+2. Restart bridges:
+   ```bash
+   docker restart matrix-bridge-whatsapp matrix-bridge-signal matrix-bridge-telegram
+   ```
+
+3. Encrypted rooms will work automatically
+
+### Troubleshooting Double Puppet
+
+**Bridge logs show "double puppet not enabled"**:
+- Verify AS_TOKEN matches in both `appservices/doublepuppet.yaml` and bridge config
+- Ensure Synapse loaded the appservice (check Synapse logs for "Registered application service")
+- Verify appservices directory is mounted in Synapse container
+
+**Messages still come from bot instead of my user**:
+- Double puppet may not be enabled yet
+- Try sending `login-matrix` command to the bridge bot
+- Check bridge logs for double puppet status
+
+**Encryption errors in logs**:
+- Ensure `encryption.allow: false` in all bridge configs
+- Clear portal database and restart bridges to force room recreation
+
 ## Why This Is So Complex
 
 Mautrix bridges were designed for manual setup with these assumptions:

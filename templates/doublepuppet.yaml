@@ -1,0 +1,39 @@
+# Double Puppet Appservice for Bridge Integration
+# This appservice allows bridges to impersonate users for better message attribution
+# Generate tokens with: openssl rand -hex 32
+
+id: doublepuppet
+url: ""
+as_token: "{{DOUBLEPUPPET_AS_TOKEN}}"
+hs_token: "{{DOUBLEPUPPET_HS_TOKEN}}"
+sender_localpart: doublepuppet
+rate_limited: false
+
+namespaces:
+  users:
+    - regex: "@.*:{{MATRIX_DOMAIN}}"
+      exclusive: false
+
+# Usage Notes:
+# 1. Generate secure tokens:
+#    AS_TOKEN=$(openssl rand -hex 32)
+#    HS_TOKEN=$(openssl rand -hex 32)
+#
+# 2. Replace placeholders in this file
+#
+# 3. Copy to appservices directory:
+#    mkdir -p appservices
+#    cp templates/doublepuppet.yaml appservices/doublepuppet.yaml
+#
+# 4. Update bridge configs with the AS_TOKEN:
+#    WhatsApp:  double_puppet.secrets.<domain>: as_token:<AS_TOKEN>
+#    Signal:    double_puppet.secrets.<domain>: as_token:<AS_TOKEN>
+#    Telegram:  bridge.login_shared_secret_map.<domain>: as_token:<AS_TOKEN>
+#
+# 5. Register in Synapse homeserver.yaml:
+#    app_service_config_files:
+#      - /appservices/doublepuppet.yaml
+#      - /bridges/whatsapp/config/registration.yaml
+#      - /bridges/signal/config/registration.yaml
+#
+# 6. Restart Synapse and bridges

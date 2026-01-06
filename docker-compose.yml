@@ -46,6 +46,7 @@ services:
     volumes:
       - ./synapse/data:/data
       - ./bridges:/bridges:ro
+      - ./appservices:/appservices:ro
     # Ports published to host for multi-machine deployment
     ports:
       - "8008:8008"
