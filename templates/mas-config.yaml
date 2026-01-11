@@ -20,7 +20,8 @@ http:
 database:
   # PostgreSQL connection string
   # Format: postgresql://user:password@host:port/database
-  uri: "postgresql://synapse:{{POSTGRES_PASSWORD}}@postgres:5432/synapse"
+  # MAS v1.8.0+ requires a separate database (created by postgres/init/01-init-databases.sql)
+  uri: "postgresql://synapse:{{POSTGRES_PASSWORD}}@postgres:5432/mas"
   # Connection pool settings
   min_connections: 5
   max_connections: 10
@@ -31,11 +32,15 @@ secrets:
   # Generate with: openssl rand -hex 32
   encryption: "{{MAS_SECRETS_ENCRYPTION}}"
 
-  # Keys secret - MUST be exactly 32 bytes (64 hex characters)
-  # Generate with: openssl rand -hex 32
+  # Signing keys - MAS v1.8.0+ requires EC private keys
+  # Generate with: openssl ecparam -name prime256v1 -genkey
+  # Copy the full output including the BEGIN/END lines
   keys:
     - kid: "primary"
-      key: "{{MAS_SECRETS_KEYS}}"
+      key: |
+        -----BEGIN EC PRIVATE KEY-----
+        {{MAS_EC_PRIVATE_KEY}}
+        -----END EC PRIVATE KEY-----
 
 # Matrix homeserver configuration
 matrix:
@@ -154,8 +159,12 @@ account:
 # Important Notes:
 # ============================================
 #
-# 1. Secrets must be EXACTLY 64 hex characters (32 bytes)
-#    Generate with: openssl rand -hex 32
+# 1. Signing Keys (MAS v1.8.0+):
+#    - MAS requires EC or RSA private keys (not hex strings)
+#    - Encryption secret: openssl rand -hex 32 (64 hex chars)
+#    - Signing key: openssl ecparam -name prime256v1 -genkey
+#    - Reference: https://element-hq.github.io/matrix-authentication-service/reference/configuration.html#signing-keys
+#    - For OIDC compliance, at least one RSA key is recommended
 #
 # 2. Database password MUST match POSTGRES_PASSWORD in .env
 #    and the password in homeserver.yaml

@@ -121,15 +121,25 @@ openssl rand -hex 32
 
 Save this as: `MAS_SECRETS_ENCRYPTION`
 
-### 2d. MAS Keys Secret
+### 2d. MAS Signing Key (MAS v1.8.0+)
+
+**Note:** MAS v1.8.0+ requires EC private keys instead of hex strings. This key will be pasted directly into the MAS config file (not stored as an environment variable).
 
 ```bash
-openssl rand -hex 32
+openssl ecparam -name prime256v1 -genkey
 ```
 
-**Expected output:** Exactly 64 hexadecimal characters (different from above)
+**Expected output:** A multi-line EC private key like:
+```
+-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEIK...
+...multiple lines...
+-----END EC PRIVATE KEY-----
+```
 
-Save this as: `MAS_SECRETS_KEYS`
+You will paste this entire output (including BEGIN/END lines) into `mas/config/config.yaml` in the `secrets.keys` section. See `templates/mas-config.yaml` for the proper format.
+
+**Reference:** [MAS Signing Keys Documentation](https://element-hq.github.io/matrix-authentication-service/reference/configuration.html#signing-keys)
 
 ### 2e. OIDC Client Secret (Optional - only if using Authelia)
 
@@ -170,8 +180,9 @@ Fill in these values (copy from your saved secrets):
 | `POSTGRES_PASSWORD` | From Step 2a | ____________ |
 | `SYNAPSE_REGISTRATION_SHARED_SECRET` | From Step 2b | ____________ |
 | `MAS_SECRETS_ENCRYPTION` | From Step 2c (64 hex) | ____________ |
-| `MAS_SECRETS_KEYS` | From Step 2d (64 hex) | ____________ |
 | `AUTHELIA_CLIENT_SECRET` | From Step 2e (optional) | ____________ |
+
+**Note:** The MAS signing key from Step 2d is not stored in `.env` - you'll paste it directly into `mas/config/config.yaml` in Step 4.
 
 Save and exit (`Ctrl+X`, then `Y`, then `Enter` in nano).
 
@@ -244,7 +255,7 @@ Replace these placeholders:
 | `{{MATRIX_DOMAIN}}` | `matrix.example.com` |
 | `{{POSTGRES_PASSWORD}}` | Your DB password (**must match**) |
 | `{{MAS_SECRETS_ENCRYPTION}}` | Your 64-char hex from Step 2c |
-| `{{MAS_SECRETS_KEYS}}` | Your 64-char hex from Step 2d |
+| `{{MAS_EC_PRIVATE_KEY}}` | The EC key content from Step 2d (between the BEGIN/END lines, without the header/footer) |
 
 **If using Authelia:**
 
@@ -597,10 +608,10 @@ You should now have:
 ### 11a. Run the user registration command
 
 ```bash
-docker compose exec mas mas-cli manage register-user \
-  --username admin \
-  --admin
+docker compose exec mas mas-cli manage register-user admin --admin
 ```
+
+**Note:** MAS v1.8.0+ uses positional username argument (not `--username` flag)
 
 **Expected interaction:**
 
@@ -696,7 +707,7 @@ Congratulations! You now have:
 
 1. **Create additional users:**
    ```bash
-   docker compose exec mas mas-cli manage register-user --username USERNAME
+   docker compose exec mas mas-cli manage register-user USERNAME
    ```
 
 2. **Enable user registration** (optional):
