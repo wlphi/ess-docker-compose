@@ -1352,8 +1352,8 @@ ${MATRIX_DOMAIN}:443 {
         header Access-Control-Allow-Origin "https://${ADMIN_DOMAIN}"
         header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
         header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
-        @preflight method OPTIONS
-        respond @preflight "" 204
+        @admin_preflight method OPTIONS
+        respond @admin_preflight "" 204
         reverse_proxy synapse:8008 {
             header_down -Access-Control-Allow-Origin
         }
@@ -1652,8 +1652,8 @@ ${MATRIX_DOMAIN} {
         header Access-Control-Allow-Origin "https://${ADMIN_DOMAIN}"
         header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
         header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
-        @preflight method OPTIONS
-        respond @preflight "" 204
+        @admin_preflight method OPTIONS
+        respond @admin_preflight "" 204
         reverse_proxy synapse:8008 {
             header_down -Access-Control-Allow-Origin
         }
@@ -2050,8 +2050,8 @@ ${MATRIX_DOMAIN} {
         header Access-Control-Allow-Origin "https://${ADMIN_DOMAIN}"
         header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
         header Access-Control-Allow-Headers "Authorization, Content-Type, Accept"
-        @preflight method OPTIONS
-        respond @preflight "" 204
+        @admin_preflight method OPTIONS
+        respond @admin_preflight "" 204
         reverse_proxy ${MATRIX_SERVER_IP}:8008 {
             header_down -Access-Control-Allow-Origin
         }

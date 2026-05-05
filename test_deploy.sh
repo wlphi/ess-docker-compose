@@ -172,6 +172,47 @@ assert_owned_by() {
         || fail "$desc wrong owner: uid ${actual}, expected ${uid}"
 }
 
+# ─── Syntax/parse validators ─────────────────────────────────────────────────
+assert_valid_yaml() {
+    local file="$1"
+    if ! command -v python3 &>/dev/null; then
+        warn "python3 not found — skipping YAML validation for ${file}"; return
+    fi
+    if python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$file" 2>/dev/null; then
+        pass "valid YAML: ${file}"
+    else
+        fail "invalid YAML: ${file}"
+    fi
+}
+
+assert_valid_json() {
+    local file="$1"
+    if python3 -m json.tool "$file" > /dev/null 2>&1; then
+        pass "valid JSON: ${file}"
+    else
+        fail "invalid JSON: ${file}"
+    fi
+}
+
+assert_valid_caddyfile() {
+    local file="$1"
+    if ! sudo docker ps &>/dev/null 2>&1; then
+        warn "Docker not available — skipping Caddyfile validation for ${file}"; return
+    fi
+    local dir; dir=$(dirname "$file")
+    local base; base=$(basename "$file")
+    local out
+    if out=$(sudo docker run --rm -v "$(pwd)/${dir}:/etc/caddy:ro" caddy:2-alpine \
+                 caddy validate --config "/etc/caddy/${base}" 2>&1); then
+        pass "Caddyfile syntax valid: ${file}"
+    else
+        fail "Caddyfile syntax error: ${file}"
+        echo "$out" | grep -i "error\|Error" | head -5 | while read -r line; do
+            info "  $line"
+        done
+    fi
+}
+
 # ─── Config-file assertions (no Docker needed) ────────────────────────────────
 assert_configs() {
     local server_name="$1"
@@ -321,6 +362,14 @@ assert_configs() {
         '"m.authentication"'                                "Caddyfile → well-known includes m.authentication"
     assert_contains "caddy/Caddyfile" \
         "\"issuer\":\"https://${auth_domain}/\""            "Caddyfile → well-known m.authentication.issuer correct"
+
+    # ── Syntax/parse validation ──────────────────────────────────────────────
+    assert_valid_yaml  "mas/config/config.yaml"
+    assert_valid_yaml  "synapse/data/homeserver.yaml"
+    assert_valid_yaml  "appservices/doublepuppet.yaml"
+    assert_valid_json  "element/config/config.json"
+    assert_valid_caddyfile "caddy/Caddyfile"
+    [[ -s mas-signing.key ]] && pass "mas-signing.key non-empty" || fail "mas-signing.key is empty"
 }
 
 # ─── Curl an HTTPS endpoint, routing *.example.test → 127.0.0.1 ─────────────
@@ -574,6 +623,13 @@ assert_quickstart_configs() {
     assert_contains     "caddy/Caddyfile" "handle /account/"           "Caddyfile → /account/ uses handle (preserves prefix)"
     assert_not_contains "caddy/Caddyfile" "handle_path /account/"      "Caddyfile → /account/ not handle_path"
     assert_contains     "caddy/Caddyfile" "/_matrix/client/v3/register" "Caddyfile → register proxied to MAS"
+
+    # Syntax/parse validation
+    assert_valid_yaml  "mas/config/config.yaml"
+    assert_valid_yaml  "synapse/data/homeserver.yaml"
+    assert_valid_json  "element/config/config.json"
+    assert_valid_caddyfile "caddy/Caddyfile"
+    [[ -s mas-signing.key ]] && pass "mas-signing.key non-empty" || fail "mas-signing.key is empty"
 }
 
 # ─── Run one full scenario ────────────────────────────────────────────────────
@@ -702,6 +758,7 @@ assert_not_contains "caddy/Caddyfile.production" "handle_path /account/"       "
 assert_contains     "caddy/Caddyfile.production" '"m.authentication"'              "Caddyfile.production → well-known includes m.authentication"
 assert_contains     "caddy/Caddyfile.production" "Access-Control-Allow-Origin"    "Caddyfile.production → well-known has CORS header"
 assert_contains     "caddy/Caddyfile.production" "/_matrix/client/v3/register"    "Caddyfile.production → register proxied to MAS"
+assert_valid_caddyfile "caddy/Caddyfile.production"
 
 # Scenario Q — quickstart.sh config generation (registration closed, default)
 section "Q · quickstart.sh  (single-machine, config only)"
@@ -780,6 +837,7 @@ assert_not_contains "element/config/config.json" "participant_limit"      "Eleme
 assert_contains     "element/config/config.json" "element_call"           "Element config → element_call block present"
 # Issue #20: LIVEKIT_SECRET must be pure hex (go-jose requires it; base64 causes JWT signing errors)
 assert_matches ".env" "^LIVEKIT_SECRET=[0-9a-f]{64}$"                    ".env → LIVEKIT_SECRET is 64-char hex"
+assert_valid_yaml "livekit/livekit.yaml"
 
 # Scenario C — open registration enabled with live stack (endpoint tests)
 run_scenario \
@@ -865,6 +923,32 @@ assert_not_contains "mas/config/config.yaml" \
 assert_file ".env"                                              ".env generated"
 assert_contains ".env" "OIDC_ISSUER_URL=https://auth.example.test/app/o/matrix/" ".env → OIDC_ISSUER_URL set"
 assert_contains ".env" "OIDC_CLIENT_ID=test-client-id"          ".env → OIDC_CLIENT_ID set"
+
+# Scenario AL — Authelia SSO enabled (local, config only)
+section "AL · Authelia SSO  (local, config only)"
+teardown_stack
+cleanup_configs
+info "Running deploy.sh with Authelia SSO (piped stdin, SKIP_START=true)"
+# Stdin answers in prompt order:
+#   [1] Deployment type:               1  (local)
+#   [2] SSO provider choice:           2  (Authelia)
+#   [3] Enable Element Call?           n
+#   [4] Custom Docker registry prefix: (empty)
+#   [5] Use hardened images?           n
+#   [6] SERVER_NAME choice:            1  (TLD: @user:example.test)
+#   [7] Press Enter to continue:       (empty)
+printf '%s\n' "1" "2" "n" "" "n" "1" "" \
+    | SKIP_START=true bash deploy.sh
+header "Authelia config assertions"
+assert_file "authelia/config/configuration.yml"   "authelia/config/configuration.yml generated"
+assert_file "authelia/config/users_database.yml"  "authelia/config/users_database.yml generated"
+assert_valid_yaml "authelia/config/configuration.yml"
+assert_valid_yaml "authelia/config/users_database.yml"
+[[ -s authelia_private.pem ]] && pass "authelia_private.pem non-empty" || fail "authelia_private.pem is empty"
+assert_contains "authelia/config/configuration.yml" "jwt_secret:"    "Authelia config → jwt_secret present"
+assert_contains "authelia/config/configuration.yml" "hmac_secret:"   "Authelia config → hmac_secret present"
+assert_contains "authelia/config/users_database.yml" "users:"        "Authelia users db → users block present"
+assert_contains "authelia/config/users_database.yml" "admin"         "Authelia users db → admin user present"
 
 trap - EXIT
 cleanup_on_exit
