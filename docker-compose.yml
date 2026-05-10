@@ -99,6 +99,11 @@ services:
     depends_on:
       - synapse
       - mas
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # Redis for Authelia session storage
   redis:

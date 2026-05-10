@@ -70,6 +70,30 @@ services:
     depends_on:
       - synapse
 
+  # Element Admin - Web UI for managing users/rooms via MAS
+  element-admin:
+    image: ${ELEMENT_ADMIN_IMAGE:-oci.element.io/element-admin:latest}
+    container_name: matrix-element-admin
+    restart: unless-stopped
+    environment:
+      SERVER_NAME: "${SERVER_NAME}"
+      OIDC_CLIENT_ID: "01ADMN00000000000000000000"
+      OIDC_ISSUER: "https://${AUTH_DOMAIN}/"
+    expose:
+      - "8080"
+    networks:
+      - matrix-network
+    depends_on:
+      - synapse
+      - mas
+    extra_hosts:
+      - "auth.example.test:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   # LiveKit SFU — media server for Element Call (Optional - use profile "element-call" to enable)
   livekit:
     profiles:
