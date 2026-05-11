@@ -1,5 +1,5 @@
 FROM rust:1-slim AS builder
-RUN apt-get update && apt-get install -y pkg-config libssl-dev libpq-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev libpq-dev make && rm -rf /var/lib/apt/lists/*
 RUN cargo install --git https://github.com/matrix-org/rust-synapse-compress-state synapse_auto_compressor
 
 FROM debian:bookworm-slim
