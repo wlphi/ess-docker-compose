@@ -50,6 +50,7 @@ MATRIX_DOMAIN="matrix.${DOMAIN}"
 ELEMENT_DOMAIN="element.${DOMAIN}"
 ADMIN_DOMAIN="admin.${DOMAIN}"
 AUTH_DOMAIN="auth.${DOMAIN}"
+FLUFFYCHAT_DOMAIN="chat.${DOMAIN}"
 CALL_DOMAIN="call.${DOMAIN}"
 RTC_DOMAIN="rtc.${DOMAIN}"
 
@@ -211,11 +212,13 @@ clients:
       - 'https://${ELEMENT_DOMAIN}/mobile_guide/'
       - 'io.element.app:/callback'
 
-  - client_id: '01ADMN00000000000000000000'
+  # FluffyChat (public client — web + native apps)
+  - client_id: '01FLFFCHT0000000000000000FC'
     client_auth_method: none
     redirect_uris:
-      - 'https://${ADMIN_DOMAIN}/'
-      - 'https://${ADMIN_DOMAIN}'
+      - 'https://${FLUFFYCHAT_DOMAIN}'
+      - 'https://${FLUFFYCHAT_DOMAIN}/'
+      - 'im.fluffychat://login'
 
   - client_id: '0000000000000000000SYNAPSE'
     client_auth_method: client_secret_basic
@@ -263,6 +266,24 @@ cat > element/config/config.json << EOF
 }
 EOF
 ok "Element Web config written"
+
+# ── FluffyChat config ─────────────────────────────────────────────────────────
+
+info "Writing FluffyChat config..."
+mkdir -p fluffychat
+cat > fluffychat/config.json << EOF
+{
+    "default_homeserver": "${MATRIX_DOMAIN}",
+    "homeserver_list": [
+        {
+            "name": "${MATRIX_DOMAIN}",
+            "server_url": "https://${MATRIX_DOMAIN}",
+            "isDefault": true
+        }
+    ]
+}
+EOF
+ok "FluffyChat config written"
 
 # ── LiveKit config ────────────────────────────────────────────────────────────
 
@@ -486,7 +507,11 @@ ${ELEMENT_DOMAIN} {
 }
 
 ${ADMIN_DOMAIN} {
-    reverse_proxy element-admin:8080
+    reverse_proxy ketesa:8080
+}
+
+${FLUFFYCHAT_DOMAIN} {
+    reverse_proxy fluffychat:80
 }
 EOF
 
@@ -534,11 +559,11 @@ for i in {1..30}; do
 done
 ok "PostgreSQL ready"
 
-CORE_SERVICES="postgres synapse mas element element-admin caddy"
+CORE_SERVICES="postgres synapse mas element fluffychat ketesa caddy"
 if $USE_ELEMENT_CALL; then CORE_SERVICES="${CORE_SERVICES} livekit lk-jwt-service element-call"; fi
 
 info "Starting all services..."
-sudo docker compose --profile single-machine up -d ${CORE_SERVICES}
+sudo docker compose --profile single-machine --profile fluffychat up -d --remove-orphans ${CORE_SERVICES}
 echo ""
 
 fi
@@ -548,14 +573,16 @@ fi
 ok "Stack is up."
 echo ""
 echo "  Element Web:    https://${ELEMENT_DOMAIN}"
+echo "  FluffyChat:     https://${FLUFFYCHAT_DOMAIN}"
 echo "  Matrix API:     https://${MATRIX_DOMAIN}"
 echo "  MAS Auth:       https://${AUTH_DOMAIN}"
-echo "  Element Admin:  https://${ADMIN_DOMAIN}"
+echo "  Ketesa:         https://${ADMIN_DOMAIN}"
 if $USE_ELEMENT_CALL; then echo "  Element Call:   https://${CALL_DOMAIN}"; fi
 echo ""
 echo "DNS — point all subdomains to this server:"
 echo "  ${MATRIX_DOMAIN}"
 echo "  ${ELEMENT_DOMAIN}"
+echo "  ${FLUFFYCHAT_DOMAIN}"
 echo "  ${ADMIN_DOMAIN}"
 echo "  ${AUTH_DOMAIN}"
 if $USE_ELEMENT_CALL; then

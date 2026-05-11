@@ -206,6 +206,28 @@ fi
 echo ""
 
 # ============================================================================
+# FLUFFYCHAT SELECTION
+# ============================================================================
+echo -e "${CYAN}Enable FluffyChat (alternative Matrix web client)?${NC}"
+echo ""
+echo -e "  ${GREEN}Yes)${NC} Self-host FluffyChat alongside Element Web"
+echo -e "       → Adds a fluffychat container"
+echo -e "       → Registers FluffyChat as MAS OIDC client (fixes cross-signing reset)"
+echo ""
+echo -e "  ${GREEN}No)${NC}  Element Web only (default)"
+echo ""
+read -p "Enable FluffyChat? [y/N]: " INCLUDE_FLUFFYCHAT
+
+if [[ "$INCLUDE_FLUFFYCHAT" =~ ^[Yy]$ ]]; then
+    USE_FLUFFYCHAT=true
+    echo -e "${GREEN}✓${NC} FluffyChat will be enabled"
+else
+    USE_FLUFFYCHAT=false
+    echo -e "${GREEN}✓${NC} FluffyChat disabled"
+fi
+echo ""
+
+# ============================================================================
 # OPEN REGISTRATION
 # ============================================================================
 if [[ "$USE_AUTHELIA" == true || "$USE_CUSTOM_OIDC" == true ]]; then
@@ -271,7 +293,8 @@ build_image() {
 POSTGRES_IMAGE=$(build_image "postgres:16-alpine")
 SYNAPSE_IMAGE=$(build_image "matrixdotorg/synapse:latest")
 ELEMENT_IMAGE=$(build_image "vectorim/element-web:latest")
-ELEMENT_ADMIN_IMAGE=$(build_image "oci.element.io/element-admin:latest")
+FLUFFYCHAT_IMAGE=$(build_image "ghcr.io/krille-chan/fluffychat:latest")
+KETESA_IMAGE=$(build_image "etkecc/ketesa:latest")
 MAS_IMAGE=$(build_image "ghcr.io/element-hq/matrix-authentication-service:latest")
 TELEGRAM_IMAGE=$(build_image "dock.mau.dev/mautrix/telegram:latest")
 WHATSAPP_IMAGE=$(build_image "dock.mau.dev/mautrix/whatsapp:latest")
@@ -330,6 +353,7 @@ if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
     ADMIN_DOMAIN="admin.example.test"
     AUTH_DOMAIN="auth.example.test"
     AUTHELIA_DOMAIN="authelia.example.test"
+    FLUFFYCHAT_DOMAIN="chat.example.test"
     RTC_DOMAIN="rtc.example.test"
     CALL_DOMAIN="call.example.test"
 
@@ -390,10 +414,17 @@ else
     ELEMENT_SUBDOMAIN=${ELEMENT_SUBDOMAIN:-element}
     ELEMENT_DOMAIN="${ELEMENT_SUBDOMAIN}.${DOMAIN_BASE}"
 
-    # Element Admin subdomain
-    read -p "Enter Element Admin subdomain [default: admin]: " ADMIN_SUBDOMAIN
+    # Ketesa subdomain
+    read -p "Enter Ketesa (admin panel) subdomain [default: admin]: " ADMIN_SUBDOMAIN
     ADMIN_SUBDOMAIN=${ADMIN_SUBDOMAIN:-admin}
     ADMIN_DOMAIN="${ADMIN_SUBDOMAIN}.${DOMAIN_BASE}"
+
+    # FluffyChat subdomain
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        read -p "Enter FluffyChat subdomain [default: chat]: " FLUFFYCHAT_SUBDOMAIN
+        FLUFFYCHAT_SUBDOMAIN=${FLUFFYCHAT_SUBDOMAIN:-chat}
+        FLUFFYCHAT_DOMAIN="${FLUFFYCHAT_SUBDOMAIN}.${DOMAIN_BASE}"
+    fi
 
     # MAS subdomain
     read -p "Enter MAS/Auth subdomain [default: auth]: " AUTH_SUBDOMAIN
@@ -469,6 +500,9 @@ else
     echo ""
 fi
 
+# Ensure FLUFFYCHAT_DOMAIN is always set (needed for MAS client entry even when service is disabled)
+FLUFFYCHAT_DOMAIN="${FLUFFYCHAT_DOMAIN:-chat.${DOMAIN_BASE}}"
+
 # Step 1: Check prerequisites
 echo -e "${BLUE}[1/13] Checking prerequisites...${NC}"
 if ! command -v openssl &> /dev/null; then
@@ -529,7 +563,9 @@ ELEMENT_DOMAIN=${ELEMENT_DOMAIN}
 ADMIN_DOMAIN=${ADMIN_DOMAIN}
 AUTH_DOMAIN=${AUTH_DOMAIN}
 AUTHELIA_DOMAIN=${AUTHELIA_DOMAIN}
+FLUFFYCHAT_DOMAIN=${FLUFFYCHAT_DOMAIN:-}
 SERVER_NAME=${SERVER_NAME}
+USE_FLUFFYCHAT=${USE_FLUFFYCHAT}
 
 # PostgreSQL
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -555,7 +591,8 @@ TZ=${TZ:-Europe/Berlin}
 POSTGRES_IMAGE=${POSTGRES_IMAGE}
 SYNAPSE_IMAGE=${SYNAPSE_IMAGE}
 ELEMENT_IMAGE=${ELEMENT_IMAGE}
-ELEMENT_ADMIN_IMAGE=${ELEMENT_ADMIN_IMAGE}
+FLUFFYCHAT_IMAGE=${FLUFFYCHAT_IMAGE}
+KETESA_IMAGE=${KETESA_IMAGE}
 REDIS_IMAGE=${REDIS_IMAGE}
 MAS_IMAGE=${MAS_IMAGE}
 TELEGRAM_IMAGE=${TELEGRAM_IMAGE}
@@ -972,12 +1009,13 @@ clients:
       - 'https://${ELEMENT_DOMAIN}/mobile_guide/'
       - 'io.element.app:/callback'
 
-  # Element Admin (public - for admin UI)
-  - client_id: '01ADMN00000000000000000000'
+  # FluffyChat (public client — web + native apps)
+  - client_id: '01FLFFCHT0000000000000000FC'
     client_auth_method: none
     redirect_uris:
-      - 'https://${ADMIN_DOMAIN}/'
-      - 'https://${ADMIN_DOMAIN}'
+      - 'https://${FLUFFYCHAT_DOMAIN}'
+      - 'https://${FLUFFYCHAT_DOMAIN}/'
+      - 'im.fluffychat://login'
 
   # Synapse client (confidential - for backend integration)
   - client_id: '0000000000000000000SYNAPSE'
@@ -1044,6 +1082,26 @@ cat > element/config/config.json << EOF
 EOF
 print_status "Element Web configuration created"
 echo ""
+
+# Step 11.1: Create FluffyChat config (if enabled)
+if [[ "$USE_FLUFFYCHAT" == true ]]; then
+    echo -e "${BLUE}[11.1/13] Creating FluffyChat configuration...${NC}"
+    mkdir -p fluffychat
+    cat > fluffychat/config.json << EOF
+{
+    "default_homeserver": "${SERVER_NAME}",
+    "homeserver_list": [
+        {
+            "name": "${SERVER_NAME}",
+            "server_url": "https://${MATRIX_DOMAIN}",
+            "isDefault": true
+        }
+    ]
+}
+EOF
+    print_status "FluffyChat configuration created"
+    echo ""
+fi
 
 # Step 11.5: Create LiveKit config (if Element Call enabled)
 if [[ "$USE_ELEMENT_CALL" == true ]]; then
@@ -1347,7 +1405,7 @@ ${MATRIX_DOMAIN}:443 {
         }
     }
 
-    # Synapse admin API — CORS for Element Admin
+    # Synapse admin API — CORS for Ketesa
     handle /_synapse/admin* {
         header Access-Control-Allow-Origin "https://${ADMIN_DOMAIN}"
         header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
@@ -1503,16 +1561,33 @@ ${ELEMENT_DOMAIN}:443 {
 }
 
 # =========================
-# Element Admin
+# Ketesa
 # =========================
 ${ADMIN_DOMAIN}:443 {
     tls internal
 
     handle {
-        reverse_proxy element-admin:8080
+        reverse_proxy ketesa:8080
     }
 }
 EOF
+
+    # Append FluffyChat block if enabled
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        cat >> caddy/Caddyfile << EOF
+
+# =========================
+# FluffyChat
+# =========================
+${FLUFFYCHAT_DOMAIN}:443 {
+    tls internal
+
+    handle {
+        reverse_proxy fluffychat:80
+    }
+}
+EOF
+    fi
 
     # Append identity domain well-known block if SERVER_NAME differs from MATRIX_DOMAIN
     if [[ "$SERVER_NAME" != "$MATRIX_DOMAIN" ]]; then
@@ -1647,7 +1722,7 @@ ${MATRIX_DOMAIN} {
         }
     }
 
-    # Synapse admin API — CORS for Element Admin
+    # Synapse admin API — CORS for Ketesa
     handle /_synapse/admin* {
         header Access-Control-Allow-Origin "https://${ADMIN_DOMAIN}"
         header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
@@ -1734,14 +1809,29 @@ ${ELEMENT_DOMAIN} {
 }
 
 # =========================
-# Element Admin
+# Ketesa
 # =========================
 ${ADMIN_DOMAIN} {
     handle {
-        reverse_proxy element-admin:8080
+        reverse_proxy ketesa:8080
     }
 }
 EOF
+
+    # Append FluffyChat block if enabled
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        cat >> caddy/Caddyfile << EOF
+
+# =========================
+# FluffyChat
+# =========================
+${FLUFFYCHAT_DOMAIN} {
+    handle {
+        reverse_proxy fluffychat:80
+    }
+}
+EOF
+    fi
 
     # Append identity domain well-known block if SERVER_NAME differs from MATRIX_DOMAIN
     if [[ "$SERVER_NAME" != "$MATRIX_DOMAIN" ]]; then
@@ -1816,7 +1906,10 @@ echo -e "  Postgres:      $POSTGRES_IMAGE"
 echo -e "  Redis:         $REDIS_IMAGE"
 echo -e "  MAS:           $MAS_IMAGE"
 echo -e "  Element:       $ELEMENT_IMAGE"
-echo -e "  Element Admin: $ELEMENT_ADMIN_IMAGE"
+if [[ "$USE_FLUFFYCHAT" == true ]]; then
+    echo -e "  FluffyChat:    $FLUFFYCHAT_IMAGE"
+fi
+echo -e "  Ketesa:        $KETESA_IMAGE"
 echo -e "  Authelia:      $AUTHELIA_IMAGE"
 echo -e "  Caddy:         $CADDY_IMAGE"
 if [[ "$USE_ELEMENT_CALL" == true ]]; then
@@ -1878,14 +1971,17 @@ fi
 if [[ "$USE_ELEMENT_CALL" == true ]]; then
     COMPOSE_PROFILES="${COMPOSE_PROFILES} --profile element-call"
 fi
+if [[ "$USE_FLUFFYCHAT" == true ]]; then
+    COMPOSE_PROFILES="${COMPOSE_PROFILES} --profile fluffychat"
+fi
 
-# Start remaining services
+# Start remaining services (--remove-orphans cleans up containers from renamed/removed services)
 if [[ -n "$COMPOSE_PROFILES" ]]; then
     print_info "Starting all services (profiles:${COMPOSE_PROFILES})..."
-    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} ${COMPOSE_PROFILES} up -d
+    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} ${COMPOSE_PROFILES} up -d --remove-orphans
 else
     print_info "Starting all services..."
-    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} up -d
+    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} up -d --remove-orphans
 fi
 echo ""
 
@@ -2045,7 +2141,7 @@ ${MATRIX_DOMAIN} {
         }
     }
 
-    # Synapse admin API — CORS for Element Admin
+    # Synapse admin API — CORS for Ketesa
     handle /_synapse/admin* {
         header Access-Control-Allow-Origin "https://${ADMIN_DOMAIN}"
         header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
@@ -2131,15 +2227,30 @@ ${ELEMENT_DOMAIN} {
 }
 
 # =========================
-# Element Admin
+# Ketesa
 # =========================
 ${ADMIN_DOMAIN} {
-    # Proxy to Element Admin
+    # Proxy to Ketesa
     handle {
         reverse_proxy ${MATRIX_SERVER_IP}:8091
     }
 }
 EOF
+
+    # Append FluffyChat block if enabled
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        cat >> caddy/Caddyfile.production << EOF
+
+# =========================
+# FluffyChat
+# =========================
+${FLUFFYCHAT_DOMAIN} {
+    handle {
+        reverse_proxy ${MATRIX_SERVER_IP}:8092
+    }
+}
+EOF
+    fi
 
     # Append identity domain well-known block if SERVER_NAME differs from MATRIX_DOMAIN
     if [[ "$SERVER_NAME" != "$MATRIX_DOMAIN" ]]; then
@@ -2220,6 +2331,9 @@ echo ""
 if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
     echo -e "${BLUE}Access Points (HTTPS with self-signed certificates):${NC}"
     echo -e "  • Element Web:  https://${ELEMENT_DOMAIN}"
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        echo -e "  • FluffyChat:   https://${FLUFFYCHAT_DOMAIN}"
+    fi
     echo -e "  • Matrix API:   https://${MATRIX_DOMAIN}"
     echo -e "  • MAS (Auth):   https://${AUTH_DOMAIN}"
     if [[ "$USE_AUTHELIA" == true ]]; then
@@ -2266,6 +2380,9 @@ if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
 elif [[ "$DEPLOYMENT_MODE" == "production-single" ]]; then
     echo -e "${BLUE}Access Points (once DNS is live):${NC}"
     echo -e "  • Element Web:  https://${ELEMENT_DOMAIN}"
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        echo -e "  • FluffyChat:   https://${FLUFFYCHAT_DOMAIN}"
+    fi
     echo -e "  • Matrix API:   https://${MATRIX_DOMAIN}"
     echo -e "  • MAS (Auth):   https://${AUTH_DOMAIN}"
     if [[ "$USE_ELEMENT_CALL" == true ]]; then
@@ -2277,6 +2394,9 @@ elif [[ "$DEPLOYMENT_MODE" == "production-single" ]]; then
     echo -e "  • ${ELEMENT_DOMAIN}"
     echo -e "  • ${ADMIN_DOMAIN}"
     echo -e "  • ${AUTH_DOMAIN}"
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        echo -e "  • ${FLUFFYCHAT_DOMAIN}"
+    fi
     if [[ "$USE_ELEMENT_CALL" == true ]]; then
         echo -e "  • ${RTC_DOMAIN}"
         echo -e "  • ${CALL_DOMAIN}"
@@ -2344,6 +2464,9 @@ else
     echo ""
     echo -e "${BLUE}Access URLs (after DNS and Caddy setup):${NC}"
     echo -e "  • Element Web:  https://${ELEMENT_DOMAIN}"
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        echo -e "  • FluffyChat:   https://${FLUFFYCHAT_DOMAIN}"
+    fi
     echo -e "  • Matrix API:   https://${MATRIX_DOMAIN}"
     echo -e "  • MAS (Auth):   https://${AUTH_DOMAIN}"
     echo -e "  • Authelia:     https://${AUTHELIA_DOMAIN}"

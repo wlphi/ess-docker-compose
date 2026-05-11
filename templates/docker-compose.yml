@@ -83,13 +83,13 @@ services:
     networks:
       - matrix
 
-  # Element Admin - Admin Interface
-  element-admin:
-    image: awesometechnologies/synapse-admin:latest
-    container_name: matrix-element-admin
+  # Ketesa - Admin Interface
+  ketesa:
+    image: etkecc/ketesa:latest
+    container_name: matrix-ketesa
     restart: unless-stopped
     ports:
-      - "8081:80"  # Admin interface (consider restricting access)
+      - "8091:8080"
     networks:
       - matrix
 

@@ -101,6 +101,7 @@ cleanup_configs() {
     # These may be root-owned from docker run or previous deploys
     sudo rm -f mas/config/config.yaml 2>/dev/null || true
     sudo rm -f element/config/config.json 2>/dev/null || true
+    sudo rm -f fluffychat/config.json 2>/dev/null || true
     sudo rm -f authelia/config/configuration.yml authelia/config/users_database.yml 2>/dev/null || true
     sudo rm -f synapse/data/homeserver.yaml synapse/data/homeserver.yaml.bak 2>/dev/null || true
 }
@@ -351,7 +352,7 @@ assert_configs() {
         "/_synapse/admin"                                   "Caddyfile → synapse admin route present"
     assert_contains "caddy/Caddyfile" \
         'Access-Control-Allow-Origin "https://admin.example.test"' \
-                                                            "Caddyfile → synapse admin CORS header for Element Admin"
+                                                            "Caddyfile → synapse admin CORS header for Ketesa"
     assert_not_contains "caddy/Caddyfile" \
         'respond "Forbidden" 403'                           "Caddyfile → admin API not blocked with 403"
     assert_contains "caddy/Caddyfile" \
@@ -362,6 +363,10 @@ assert_configs() {
         '"m.authentication"'                                "Caddyfile → well-known includes m.authentication"
     assert_contains "caddy/Caddyfile" \
         "\"issuer\":\"https://${auth_domain}/\""            "Caddyfile → well-known m.authentication.issuer correct"
+
+    # ── MAS FluffyChat client (always registered — native app users benefit even without self-hosting) ─
+    assert_contains "mas/config/config.yaml" \
+        "im.fluffychat://login"                             "MAS → FluffyChat native redirect URI registered"
 
     # ── Syntax/parse validation ──────────────────────────────────────────────
     assert_valid_yaml  "mas/config/config.yaml"
@@ -617,12 +622,19 @@ assert_quickstart_configs() {
     assert_contains     "caddy/Caddyfile" "admin localhost:2019"       "Caddyfile → admin API localhost only"
     assert_contains     "caddy/Caddyfile" "/_synapse/admin"            "Caddyfile → synapse admin route present"
     assert_contains     "caddy/Caddyfile" "Access-Control-Allow-Origin \"https://admin.${domain}\"" \
-                                                                       "Caddyfile → synapse admin CORS header for Element Admin"
+                                                                       "Caddyfile → synapse admin CORS header for Ketesa"
     assert_not_contains "caddy/Caddyfile" 'respond "Forbidden" 403'   "Caddyfile → admin API not blocked with 403"
     assert_contains     "caddy/Caddyfile" "header_up X-Forwarded-Host" "Caddyfile → MAS proxy forwards X-Forwarded-Host"
     assert_contains     "caddy/Caddyfile" "handle /account/"           "Caddyfile → /account/ uses handle (preserves prefix)"
     assert_not_contains "caddy/Caddyfile" "handle_path /account/"      "Caddyfile → /account/ not handle_path"
     assert_contains     "caddy/Caddyfile" "/_matrix/client/v3/register" "Caddyfile → register proxied to MAS"
+
+    # FluffyChat config (quickstart always generates it)
+    assert_file "fluffychat/config.json"          "fluffychat/config.json generated"
+    assert_valid_json  "fluffychat/config.json"
+    assert_contains "fluffychat/config.json"      "chat.${domain}"           "FluffyChat config → correct domain"
+    assert_contains "caddy/Caddyfile"             "reverse_proxy fluffychat:80" "Caddyfile → FluffyChat reverse_proxy"
+    assert_contains "mas/config/config.yaml"      "im.fluffychat://login"    "MAS → FluffyChat native redirect URI registered"
 
     # Syntax/parse validation
     assert_valid_yaml  "mas/config/config.yaml"
@@ -652,12 +664,13 @@ run_scenario() {
     #   [1] Deployment type:                1  (local)
     #   [2] SSO provider choice:            (empty → 1=None)
     #   [3] Enable Element Call?            n
-    #   [4] Allow open registration?        $reg_choice
-    #   [5] Custom Docker registry prefix:  (empty → default)
-    #   [6] Use hardened images?            n
-    #   [7] SERVER_NAME choice:             $sn_choice  (1=TLD, 2=subdomain)
-    #   [8] Press Enter to continue:        (empty)
-    printf '%s\n' "1" "" "n" "$reg_choice" "" "n" "$sn_choice" "" \
+    #   [4] Enable FluffyChat?              n
+    #   [5] Allow open registration?        $reg_choice
+    #   [6] Custom Docker registry prefix:  (empty → default)
+    #   [7] Use hardened images?            n
+    #   [8] SERVER_NAME choice:             $sn_choice  (1=TLD, 2=subdomain)
+    #   [9] Press Enter to continue:        (empty)
+    printf '%s\n' "1" "" "n" "n" "$reg_choice" "" "n" "$sn_choice" "" \
         | bash deploy.sh
 
     assert_configs "$expected_sn" "$open_reg"
@@ -701,12 +714,10 @@ check_prereqs
 
 # ─── Static file sanity checks (no Docker needed) ────────────────────────────
 section "Static · docker-compose.yml integrity"
-# Issue #19: element-admin must use SERVER_NAME (not MATRIX_DOMAIN) so MXIDs resolve
-# correctly in TLD mode where SERVER_NAME != MATRIX_DOMAIN.
 assert_contains "docker-compose.yml" \
-    'SERVER_NAME: "${SERVER_NAME}"'  "docker-compose.yml → element-admin uses SERVER_NAME not MATRIX_DOMAIN"
-assert_not_contains "docker-compose.yml" \
-    'SERVER_NAME: "${MATRIX_DOMAIN}"' "docker-compose.yml → element-admin does not use MATRIX_DOMAIN"
+    'ketesa'      "docker-compose.yml → ketesa service present"
+assert_contains "docker-compose.yml" \
+    'fluffychat'  "docker-compose.yml → fluffychat service present"
 
 # Scenario A — TLD identity:       @user:example.test
 run_scenario \
@@ -729,20 +740,21 @@ info "Running deploy.sh production mode (piped stdin, SKIP_START=true)"
 #   [1] Deployment type:               3  (production distributed)
 #   [2] SSO provider choice:           (empty → 1=None)
 #   [3] Enable Element Call?           n
-#   [4] Allow open registration?       n  (default: closed)
-#   [5] Custom Docker registry prefix: (empty)
-#   [6] Use hardened images?           n
-#   [7] Base domain:                   example.com
-#   [8] Matrix subdomain:              (empty → matrix)
-#   [9] Element subdomain:             (empty → element)
-#  [10] Admin subdomain:               (empty → admin)
-#  [11] Auth subdomain:                (empty → auth)
-#  [12] Authelia subdomain:            (empty → authelia)
-#  [13] SERVER_NAME choice:            1  (TLD: @user:example.com)
-#  [14] Matrix server address:         (empty → 10.0.1.10)
-#  [15] Authelia server address:       (empty → 10.0.1.20)
-#  [16] Let's Encrypt email:           (empty → admin@example.com)
-printf '%s\n' "3" "" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" "" "" \
+#   [4] Enable FluffyChat?             n
+#   [5] Allow open registration?       n  (default: closed)
+#   [6] Custom Docker registry prefix: (empty)
+#   [7] Use hardened images?           n
+#   [8] Base domain:                   example.com
+#   [9] Matrix subdomain:              (empty → matrix)
+#  [10] Element subdomain:             (empty → element)
+#  [11] Admin subdomain:               (empty → admin)
+#  [12] Auth subdomain:                (empty → auth)   ← no FluffyChat subdomain since disabled
+#  [13] Authelia subdomain:            (empty → authelia)
+#  [14] SERVER_NAME choice:            1  (TLD: @user:example.com)
+#  [15] Matrix server address:         (empty → 10.0.1.10)
+#  [16] Authelia server address:       (empty → 10.0.1.20)
+#  [17] Let's Encrypt email:           (empty → admin@example.com)
+printf '%s\n' "3" "" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" "" "" \
     | SKIP_START=true bash deploy.sh
 
 header "Production Caddyfile assertions"
@@ -750,7 +762,7 @@ assert_file "caddy/Caddyfile.production"                              "caddy/Cad
 assert_contains     "caddy/Caddyfile.production" "admin localhost:2019"        "Caddyfile.production → admin API localhost only"
 assert_contains     "caddy/Caddyfile.production" "/_synapse/admin"             "Caddyfile.production → synapse admin route present"
 assert_contains     "caddy/Caddyfile.production" 'Access-Control-Allow-Origin "https://admin.example.com"' \
-                                                                              "Caddyfile.production → synapse admin CORS header for Element Admin"
+                                                                              "Caddyfile.production → synapse admin CORS header for Ketesa"
 assert_not_contains "caddy/Caddyfile.production" 'respond "Forbidden" 403'   "Caddyfile.production → admin API not blocked with 403"
 assert_contains     "caddy/Caddyfile.production" "header_up X-Forwarded-Host"  "Caddyfile.production → MAS proxy forwards X-Forwarded-Host"
 assert_contains     "caddy/Caddyfile.production" "handle /account/"            "Caddyfile.production → /account/ uses handle (preserves prefix)"
@@ -805,12 +817,13 @@ info "Running deploy.sh with open registration=y (piped stdin, SKIP_START=true)"
 #   [1] Deployment type:                1  (local)
 #   [2] SSO provider choice:            (empty → 1=None)
 #   [3] Enable Element Call?            n
-#   [4] Allow open registration?        y  ← testing the enabled path
-#   [5] Custom Docker registry prefix:  (empty)
-#   [6] Use hardened images?            n
-#   [7] SERVER_NAME choice:             1  (TLD)
-#   [8] Press Enter to continue:        (empty)
-printf '%s\n' "1" "" "n" "y" "" "n" "1" "" \
+#   [4] Enable FluffyChat?              n
+#   [5] Allow open registration?        y  ← testing the enabled path
+#   [6] Custom Docker registry prefix:  (empty)
+#   [7] Use hardened images?            n
+#   [8] SERVER_NAME choice:             1  (TLD)
+#   [9] Press Enter to continue:        (empty)
+printf '%s\n' "1" "" "n" "n" "y" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
 assert_configs "example.test" "true"
 
@@ -823,12 +836,13 @@ info "Running deploy.sh with Element Call=y (piped stdin, SKIP_START=true)"
 #   [1] Deployment type:                1  (local)
 #   [2] SSO provider choice:            (empty → 1=None)
 #   [3] Enable Element Call?            y  ← testing Element Call path
-#   [4] Allow open registration?        n
-#   [5] Custom Docker registry prefix:  (empty)
-#   [6] Use hardened images?            n
-#   [7] SERVER_NAME choice:             1  (TLD)
-#   [8] Press Enter to continue:        (empty)
-printf '%s\n' "1" "" "y" "n" "" "n" "1" "" \
+#   [4] Enable FluffyChat?              n
+#   [5] Allow open registration?        n
+#   [6] Custom Docker registry prefix:  (empty)
+#   [7] Use hardened images?            n
+#   [8] SERVER_NAME choice:             1  (TLD)
+#   [9] Press Enter to continue:        (empty)
+printf '%s\n' "1" "" "y" "n" "n" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
 header "Element Call config assertions"
 assert_file "livekit/livekit.yaml"                                        "livekit/livekit.yaml generated"
@@ -855,18 +869,19 @@ info "Running deploy.sh production single-server mode (piped stdin, SKIP_START=t
 #   [1] Deployment type:               2  (production single-server)
 #   [2] SSO provider choice:           (empty → 1=None)
 #   [3] Enable Element Call?           n
-#   [4] Allow open registration?       n
-#   [5] Custom Docker registry prefix: (empty)
-#   [6] Use hardened images?           n
-#   [7] Base domain:                   example.com
-#   [8] Matrix subdomain:              (empty → matrix)
-#   [9] Element subdomain:             (empty → element)
-#  [10] Admin subdomain:               (empty → admin)
-#  [11] Auth subdomain:                (empty → auth)
-#  [12] Authelia subdomain:            (empty → authelia)
-#  [13] SERVER_NAME choice:            1  (TLD: @user:example.com)
-#  [14] Let's Encrypt email:           (empty → admin@example.com)  ← no server IP prompts
-printf '%s\n' "2" "" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" \
+#   [4] Enable FluffyChat?             n
+#   [5] Allow open registration?       n
+#   [6] Custom Docker registry prefix: (empty)
+#   [7] Use hardened images?           n
+#   [8] Base domain:                   example.com
+#   [9] Matrix subdomain:              (empty → matrix)
+#  [10] Element subdomain:             (empty → element)
+#  [11] Admin subdomain:               (empty → admin)
+#  [12] Auth subdomain:                (empty → auth)   ← no FluffyChat subdomain since disabled
+#  [13] Authelia subdomain:            (empty → authelia)
+#  [14] SERVER_NAME choice:            1  (TLD: @user:example.com)
+#  [15] Let's Encrypt email:           (empty → admin@example.com)  ← no server IP prompts
+printf '%s\n' "2" "" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" \
     | SKIP_START=true bash deploy.sh
 
 header "Production single-server Caddyfile assertions"
@@ -877,7 +892,7 @@ assert_contains "caddy/Caddyfile" "admin localhost:2019"                   "Cadd
 assert_contains "caddy/Caddyfile" "matrix.example.com {"                   "Caddyfile → matrix domain block (no :443)"
 assert_contains "caddy/Caddyfile" "/_synapse/admin"                        "Caddyfile → synapse admin route present"
 assert_contains "caddy/Caddyfile" 'Access-Control-Allow-Origin "https://admin.example.com"' \
-                                                                           "Caddyfile → synapse admin CORS header for Element Admin"
+                                                                           "Caddyfile → synapse admin CORS header for Ketesa"
 assert_not_contains "caddy/Caddyfile" 'respond "Forbidden" 403'           "Caddyfile → admin API not blocked with 403"
 assert_contains "caddy/Caddyfile" "header_up X-Forwarded-Host"             "Caddyfile → MAS proxy forwards X-Forwarded-Host"
 assert_contains "caddy/Caddyfile" '"m.authentication"'                     "Caddyfile → well-known includes m.authentication"
@@ -896,11 +911,12 @@ info "Running deploy.sh with custom OIDC=3 (piped stdin, SKIP_START=true)"
 #   [4] OIDC client ID:                 test-client-id
 #   [5] OIDC client secret:             test-client-secret
 #   [6] Enable Element Call?            n
-#   [7] Custom Docker registry prefix:  (empty)
-#   [8] Use hardened images?            n
-#   [9] SERVER_NAME choice:             1  (TLD)
-#  [10] Press Enter to continue:        (empty)
-printf '%s\n' "1" "3" "https://auth.example.test/app/o/matrix/" "test-client-id" "test-client-secret" "n" "" "n" "1" "" \
+#   [7] Enable FluffyChat?              n
+#   [8] Custom Docker registry prefix:  (empty)
+#   [9] Use hardened images?            n
+#  [10] SERVER_NAME choice:             1  (TLD)
+#  [11] Press Enter to continue:        (empty)
+printf '%s\n' "1" "3" "https://auth.example.test/app/o/matrix/" "test-client-id" "test-client-secret" "n" "n" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
 header "Custom OIDC config assertions"
 assert_file "mas/config/config.yaml"                              "mas/config/config.yaml generated"
@@ -933,11 +949,12 @@ info "Running deploy.sh with Authelia SSO (piped stdin, SKIP_START=true)"
 #   [1] Deployment type:               1  (local)
 #   [2] SSO provider choice:           2  (Authelia)
 #   [3] Enable Element Call?           n
-#   [4] Custom Docker registry prefix: (empty)
-#   [5] Use hardened images?           n
-#   [6] SERVER_NAME choice:            1  (TLD: @user:example.test)
-#   [7] Press Enter to continue:       (empty)
-printf '%s\n' "1" "2" "n" "" "n" "1" "" \
+#   [4] Enable FluffyChat?             n
+#   [5] Custom Docker registry prefix: (empty)
+#   [6] Use hardened images?           n
+#   [7] SERVER_NAME choice:            1  (TLD: @user:example.test)
+#   [8] Press Enter to continue:       (empty)
+printf '%s\n' "1" "2" "n" "n" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
 header "Authelia config assertions"
 assert_file "authelia/config/configuration.yml"   "authelia/config/configuration.yml generated"

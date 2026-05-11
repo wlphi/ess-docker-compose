@@ -82,28 +82,35 @@ services:
     depends_on:
       - synapse
 
-  # Element Admin - Web UI for managing users/rooms via MAS
-  element-admin:
-    image: ${ELEMENT_ADMIN_IMAGE:-oci.element.io/element-admin:latest}
-    container_name: matrix-element-admin
+  # Ketesa - Web UI for managing users/rooms via Synapse Admin API
+  ketesa:
+    image: ${KETESA_IMAGE:-etkecc/ketesa:latest}
+    container_name: matrix-ketesa
     restart: unless-stopped
-    environment:
-      SERVER_NAME: "${SERVER_NAME}"
-      OIDC_CLIENT_ID: "01ADMN00000000000000000000"
-      OIDC_ISSUER: "https://${AUTH_DOMAIN}/"
     # Port published to host for multi-machine deployment
     ports:
-      - "8091:8080"  # element-admin listens on 8080 (changed from 80 in recent versions)
+      - "8091:8080"
     networks:
       - matrix-network
     depends_on:
       - synapse
-      - mas
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+
+  # FluffyChat - alternative Matrix web client
+  fluffychat:
+    image: ${FLUFFYCHAT_IMAGE:-ghcr.io/krille-chan/fluffychat:latest}
+    container_name: matrix-fluffychat
+    restart: unless-stopped
+    volumes:
+      - ./fluffychat/config.json:/usr/share/nginx/html/config.json:ro
+    # Port published to host for multi-machine deployment
+    ports:
+      - "8092:80"
+    networks:
+      - matrix-network
+    depends_on:
+      - synapse
+    profiles:
+      - fluffychat
 
   # Redis for Authelia session storage
   redis:
