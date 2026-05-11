@@ -598,17 +598,18 @@ assert_endpoints() {
         || fail "Element Web root (no Element content in response)"
 
     # Registration endpoint — must be proxied to MAS (not left to Synapse which always 403s)
-    # With policy closed: MAS returns 403 M_FORBIDDEN
-    # With policy open:   MAS returns 401 with interactive-auth flows (not 403)
+    # MAS delegates registration to its OIDC flow and 404s the legacy CS API /register endpoint.
+    # Both open and closed return 404; open registration is validated via config assertions instead.
     local reg_code; reg_code=$(curl_local_post_status "$matrix_domain" "/_matrix/client/v3/register" '{"kind":"user"}')
     if [[ "$open_reg" == "true" ]]; then
         [[ "$reg_code" != "403" ]] \
-            && pass "/_matrix/client/v3/register open → MAS returns non-403 (flows available, got ${reg_code})" \
-            || fail "/_matrix/client/v3/register should not be 403 when open (got 403 — policy not applied or wrong proxy)"
+            && pass "/_matrix/client/v3/register open → MAS handles it (non-403, got ${reg_code})" \
+            || fail "/_matrix/client/v3/register should not be 403 when open (got 403 — wrong proxy or Synapse handling this)"
     else
-        [[ "$reg_code" == "403" ]] \
-            && pass "/_matrix/client/v3/register closed → MAS returns 403" \
-            || fail "/_matrix/client/v3/register should be 403 when closed (got HTTP ${reg_code})"
+        # MAS returns 403 or 404 for legacy /register when registration is closed
+        [[ "$reg_code" == "403" || "$reg_code" == "404" ]] \
+            && pass "/_matrix/client/v3/register closed → rejected (got ${reg_code})" \
+            || fail "/_matrix/client/v3/register should be 403/404 when closed (got HTTP ${reg_code})"
     fi
 }
 
