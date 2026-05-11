@@ -593,4 +593,147 @@ To make this fully automatic in deploy.sh:
 5. Switch bridges to `restart: unless-stopped`
 6. Final restart of all services
 
+---
+
+## Discord Bridge (mautrix-discord Go megabridge)
+
+Discord uses the current Go megabridge (`bridgev2` framework). It is always available in the stack — no profile flag needed.
+
+### Setup
+
+`setup-bridges.sh` configures Discord automatically alongside the other bridges. After it runs:
+
+1. Message `@discordbot:yourdomain.com` in Matrix
+2. Send `login` to start the OAuth2 login flow
+3. The bot will reply with a Discord authorization URL — open it and authorize
+4. Once connected, the bot will bridge your Discord servers/DMs automatically
+
+### Manual configuration (`bridges/discord/config/config.yaml`)
+
+Key fields to verify after `setup-bridges.sh`:
+
+```yaml
+homeserver:
+  address: http://synapse:8008
+  domain: yourdomain.com
+
+appservice:
+  address: http://mautrix-discord:29334
+  database: postgres://synapse:PASSWORD@postgres/discord?sslmode=disable
+
+bridge:
+  permissions:
+    "yourdomain.com": admin
+  encryption:
+    allow: false   # required — bridge encryption not compatible with MAS
+    default: false
+```
+
+### Troubleshooting Discord
+
+- **`failed to connect to homeserver`** — verify `appservice.address` uses the container name, not `127.0.0.1`
+- **Login link times out** — Discord OAuth tokens expire quickly; request a new login link
+- **Channels not bridging** — the bridge only joins servers you authorize; send `servers` to the bot to see joined servers
+
+---
+
+## Slack Bridge (mautrix-slack Go megabridge — Megaslack)
+
+Slack uses the Go megabridge rewrite. It is always available — no profile flag needed.
+
+### Setup
+
+`setup-bridges.sh` configures Slack automatically. After it runs:
+
+1. Message `@slackbot:yourdomain.com` in Matrix
+2. Send `login` — the bot replies with a Slack App installation URL
+3. Install the Slack app to your workspace to get the token
+4. Alternatively, send `login-token XOXP-...` with a user token from [api.slack.com/apps](https://api.slack.com/apps)
+
+### Manual configuration (`bridges/slack/config/config.yaml`)
+
+```yaml
+homeserver:
+  address: http://synapse:8008
+  domain: yourdomain.com
+
+appservice:
+  address: http://mautrix-slack:29335
+  database: postgres://synapse:PASSWORD@postgres/slack?sslmode=disable
+
+bridge:
+  permissions:
+    "yourdomain.com": admin
+  encryption:
+    allow: false
+    default: false
+```
+
+### Troubleshooting Slack
+
+- **`as_token was not accepted`** — registration file not loaded; check `homeserver.yaml` includes `/appservices/slack.yaml`
+- **DMs not bridging** — DM bridging requires the Slack bot to be in the workspace; use `login-token` with a user token for full access
+- **Missing channels** — only channels the bot is invited to are bridged; use `sync` command to refresh
+
+---
+
+## matrix-hookshot (GitHub / GitLab / JIRA / RSS / Webhooks)
+
+Hookshot is an appservice bridge that connects Matrix rooms to external services. Enable it with `--profile hookshot` during `deploy.sh` setup.
+
+### What hookshot can do
+
+- **Generic webhooks** — receive any HTTP POST and post it to a Matrix room (enabled by default)
+- **GitHub** — issues, PRs, CI status, releases (requires OAuth app)
+- **GitLab** — merge requests, pipelines, issues (requires access token)
+- **JIRA** — issues, comments (requires JIRA OAuth app)
+- **RSS/Atom feeds** — poll any feed and post updates to a room
+
+### After deploy.sh
+
+The `hookshot/config.yaml` template is generated with generic webhooks enabled and GitHub/GitLab/JIRA commented out. Edit it to enable integrations:
+
+```yaml
+# hookshot/config.yaml — add your credentials
+
+github:
+  auth:
+    id: YOUR_GITHUB_APP_ID
+    privateKeyFile: /data/github-key.pem
+  oauth:
+    client_id: YOUR_CLIENT_ID
+    client_secret: YOUR_CLIENT_SECRET
+    redirect_uri: https://hooks.yourdomain.com/oauth/
+
+gitlab:
+  instances:
+    gitlab.com:
+      url: https://gitlab.com
+```
+
+After editing, restart hookshot:
+
+```bash
+docker compose --profile hookshot restart hookshot
+docker compose --profile hookshot logs --tail=30 hookshot
+```
+
+### Using generic webhooks
+
+1. In a Matrix room, invite `@hookshot:yourdomain.com`
+2. Send `!hookshot webhook` — hookshot replies with a unique webhook URL
+3. POST JSON to that URL from any service (GitHub Actions, CI scripts, monitoring alerts, etc.)
+
+```bash
+curl -X POST https://hooks.yourdomain.com/webhook/YOUR_TOKEN \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Deployment complete!"}'
+```
+
+### Troubleshooting hookshot
+
+- **`Unrecognised token`** — the `as_token` in `hookshot/registration.yaml` doesn't match `appservices/hookshot.yaml`; re-run `deploy.sh` or regenerate manually
+- **`Connection refused` on webhook URL** — verify `hookshot` profile is active and the Caddyfile has a `hooks.yourdomain.com` block
+- **GitHub webhooks not firing** — check that the GitHub App webhook URL points to `https://hooks.yourdomain.com/` and is active
+
 This requires more sophisticated orchestration than docker-compose dependencies provide.

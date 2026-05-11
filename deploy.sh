@@ -21,13 +21,13 @@ DOCKER_COMPOSE_CMD="sudo docker compose"
 echo -e "${YELLOW}Using sudo for docker commands.${NC}"
 echo ""
 
-# Test docker access
-if ! sudo docker ps &> /dev/null; then
+# Test docker access (skip when SKIP_START=true for CI/testing without Docker)
+if [[ "${SKIP_START:-false}" != "true" ]] && ! sudo docker ps &> /dev/null; then
     echo -e "${RED}Error: Cannot access Docker. Please ensure Docker is running.${NC}"
     exit 1
 fi
 
-clear
+clear 2>/dev/null || true
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║       Matrix Stack Automated Deployment Script            ║${NC}"
 echo -e "${BLUE}║                  Interactive Setup                         ║${NC}"
@@ -82,11 +82,20 @@ echo ""
 # ============================================================================
 echo -e "${YELLOW}Checking for existing data directories...${NC}"
 
+# In config-only mode there is no live stack, so skip all data-dir cleanup
+if [[ "${SKIP_START:-false}" == "true" ]]; then
+    echo -e "${GREEN}✓${NC} Config-only mode — skipping data directory cleanup"
+    echo ""
+fi
+
 EXISTING_DATA=""
 PRESERVED_CLIENT_SECRET=""  # Will store existing CLIENT_SECRET to preserve Authelia integration
+
+if [[ "${SKIP_START:-false}" != "true" ]]; then
 [[ -d "postgres/data" ]] && [[ "$(ls -A postgres/data 2>/dev/null)" ]] && EXISTING_DATA="${EXISTING_DATA}postgres/data "
 [[ -d "synapse/data" ]] && [[ -f "synapse/data/homeserver.yaml" ]] && EXISTING_DATA="${EXISTING_DATA}synapse/data "
 [[ -d "mas/data" ]] && [[ "$(ls -A mas/data 2>/dev/null)" ]] && EXISTING_DATA="${EXISTING_DATA}mas/data "
+fi
 
 if [[ -n "$EXISTING_DATA" ]]; then
     echo -e "${RED}⚠ WARNING: Existing data directories found:${NC}"
@@ -574,7 +583,7 @@ if ! command -v openssl &> /dev/null; then
     print_error "openssl is not installed"
     exit 1
 fi
-if ! $DOCKER_CMD --version &> /dev/null; then
+if [[ "${SKIP_START:-false}" != "true" ]] && ! $DOCKER_CMD --version &> /dev/null; then
     print_error "Docker is not accessible"
     exit 1
 fi
@@ -1375,14 +1384,33 @@ echo -e "${BLUE}[12/13] Generating Synapse configuration...${NC}"
 
 # Generate homeserver.yaml if it doesn't exist
 if [ ! -f "synapse/data/homeserver.yaml" ]; then
-    print_info "Generating new homeserver.yaml..."
-    $DOCKER_CMD run --rm \
-        -v $(pwd)/synapse/data:/data \
-        -e SYNAPSE_SERVER_NAME=${SERVER_NAME} \
-        -e SYNAPSE_REPORT_STATS=no \
-        matrixdotorg/synapse:latest generate
-    # Fix ownership: synapse runs as uid 991 inside Docker; reclaim files for current user
-    sudo chown -R "$(id -u):$(id -g)" synapse/data/
+    if [[ "${SKIP_START:-false}" == "true" ]]; then
+        print_info "Generating minimal homeserver.yaml (config-only mode)..."
+        cat > synapse/data/homeserver.yaml << EOF
+server_name: "${SERVER_NAME}"
+pid_file: /data/homeserver.pid
+listeners:
+  - port: 8008
+    tls: false
+    type: http
+    x_forwarded: true
+    resources:
+      - names: [client, federation]
+        compress: false
+log_config: "/data/${SERVER_NAME}.log.config"
+media_store_path: /data/media_store
+report_stats: false
+EOF
+    else
+        print_info "Generating new homeserver.yaml..."
+        $DOCKER_CMD run --rm \
+            -v $(pwd)/synapse/data:/data \
+            -e SYNAPSE_SERVER_NAME=${SERVER_NAME} \
+            -e SYNAPSE_REPORT_STATS=no \
+            matrixdotorg/synapse:latest generate
+        # Fix ownership: synapse runs as uid 991 inside Docker; reclaim files for current user
+        sudo chown -R "$(id -u):$(id -g)" synapse/data/
+    fi
     print_status "Synapse configuration generated"
 else
     print_info "Existing homeserver.yaml found - preserving custom configurations"
@@ -1517,10 +1545,12 @@ EOF
     print_status "Synapse metrics listener configured (synapse/data/metrics.yaml)"
 fi
 
-# Restore ownership to Synapse uid so the container can read/write its own data
-sudo chown -R 991:991 synapse/data/
-sudo chmod 640 synapse/data/*.signing.key 2>/dev/null || true
-sudo chown -R 65532:65532 mas/data/
+# Restore ownership to container UIDs so containers can read/write their data
+if [[ "${SKIP_START:-false}" != "true" ]]; then
+    sudo chown -R 991:991 synapse/data/
+    sudo chmod 640 synapse/data/*.signing.key 2>/dev/null || true
+    sudo chown -R 65532:65532 mas/data/
+fi
 print_status "Database configuration updated with current credentials"
 echo ""
 
@@ -2699,9 +2729,11 @@ echo -e "${BLUE}═════════════════════�
 echo ""
 
 # Show service status
-echo -e "${BLUE}Service Status:${NC}"
-$DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} ps
-echo ""
+if [[ "${SKIP_START:-false}" != "true" ]]; then
+    echo -e "${BLUE}Service Status:${NC}"
+    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} ps
+    echo ""
+fi
 
 echo -e "${GREEN}✓ Matrix stack is now running!${NC}"
 echo ""

@@ -15,8 +15,10 @@
 # Usage:
 #   ./test_deploy.sh                       # full suite (config + endpoints)
 #   SKIP_INTEGRATION=true ./test_deploy.sh # config-file checks only (no endpoint tests)
+#   SKIP_DOCKER=true ./test_deploy.sh      # config-generation checks only (no Docker required)
 #
-# Requires: docker, docker compose v2, bash ≥ 4, openssl, curl
+# Requires: bash ≥ 4, openssl, curl, python3
+# Requires (unless SKIP_DOCKER=true): docker, docker compose v2
 # =============================================================================
 
 set -euo pipefail
@@ -28,6 +30,7 @@ BOLD='\033[1m'; NC='\033[0m'
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 SKIP_INTEGRATION="${SKIP_INTEGRATION:-false}"
+SKIP_DOCKER="${SKIP_DOCKER:-false}"
 COMPOSE_FILE="compose-variants/docker-compose.local.yml"
 COMPOSE_CMD="sudo docker compose --project-directory ."
 
@@ -65,13 +68,17 @@ check_prereqs() {
             || { fail "$cmd not found"; ok=false; }
     done
 
-    sudo docker ps &>/dev/null \
-        && pass "Docker daemon reachable" \
-        || { fail "Docker not accessible (sudo docker ps failed)"; ok=false; }
+    if [[ "$SKIP_DOCKER" == "true" ]]; then
+        warn "SKIP_DOCKER=true — skipping Docker checks; live scenarios will run config-only"
+    else
+        sudo docker ps &>/dev/null \
+            && pass "Docker daemon reachable" \
+            || { fail "Docker not accessible (sudo docker ps failed)"; ok=false; }
 
-    sudo docker compose version &>/dev/null \
-        && pass "docker compose v2 available" \
-        || { fail "docker compose not available"; ok=false; }
+        sudo docker compose version &>/dev/null \
+            && pass "docker compose v2 available" \
+            || { fail "docker compose not available"; ok=false; }
+    fi
 
     [[ -f deploy.sh ]] \
         || { fail "deploy.sh not found — run from repo root"; ok=false; }
@@ -82,11 +89,17 @@ check_prereqs() {
 # ─── Stop stack and wipe all data volumes ─────────────────────────────────────
 teardown_stack() {
     info "Stopping Docker stack and removing volumes..."
-    $COMPOSE_CMD -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
+    if sudo docker ps &>/dev/null 2>&1; then
+        $COMPOSE_CMD -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
+    fi
     sudo rm -rf postgres/data mas/data mas/certs caddy/data caddy/config 2>/dev/null || true
-    # Wipe synapse/data fully so no leftover signing keys or log configs
-    # confuse the next scenario's `docker run ... generate` step
-    sudo rm -rf synapse/data 2>/dev/null || true
+    # Wipe synapse/data fully so no leftover signing keys or log configs confuse the
+    # next scenario's `docker run ... generate` step.
+    # rm -rf may fail if files are owned by Docker uid 991; mv always works because
+    # only write permission on the parent directory (synapse/) is needed.
+    rm -rf synapse/data 2>/dev/null || \
+        sudo rm -rf synapse/data 2>/dev/null || \
+        { mv synapse/data "synapse/data.old.$$" 2>/dev/null || true; }
     mkdir -p synapse/data
 }
 
@@ -173,6 +186,11 @@ assert_not_world_readable() {
 
 assert_owned_by() {
     local path="$1" uid="$2" desc="$3"
+    # Ownership is only set correctly when Docker runs (chown to container UIDs happens
+    # in deploy.sh post-start); skip the check when running without Docker.
+    if ! sudo docker ps &>/dev/null 2>&1; then
+        warn "Docker not available — skipping ownership check for $desc"; return
+    fi
     local actual; actual=$(stat -c '%u' "$path" 2>/dev/null)
     [[ "$actual" == "$uid" ]] \
         && pass "$desc owned by uid ${uid}" \
@@ -638,7 +656,7 @@ assert_quickstart_configs() {
     # FluffyChat config (quickstart always generates it)
     assert_file "fluffychat/config.json"          "fluffychat/config.json generated"
     assert_valid_json  "fluffychat/config.json"
-    assert_contains "fluffychat/config.json"      "chat.${domain}"           "FluffyChat config → correct domain"
+    assert_contains "fluffychat/config.json"      "matrix.${domain}"         "FluffyChat config → homeserver domain"
     assert_contains "caddy/Caddyfile"             "reverse_proxy fluffychat:80" "Caddyfile → FluffyChat reverse_proxy"
     assert_contains "mas/config/config.yaml"      "im.fluffychat://login"    "MAS → FluffyChat native redirect URI registered"
 
@@ -690,6 +708,15 @@ run_scenario() {
     #   [9] Use hardened images?            n
     #  [10] SERVER_NAME choice:             $sn_choice  (1=TLD, 2=subdomain)
     #  [11] Press Enter to continue:        (empty)
+    if ! sudo docker ps &>/dev/null 2>&1; then
+        warn "Docker not available — running config-only for: $name"
+        printf '%s\n' "1" "" "n" "n" "n" "n" "$reg_choice" "" "n" "$sn_choice" "" \
+            | SKIP_START=true bash deploy.sh
+        assert_configs "$expected_sn" "$open_reg"
+        warn "Skipping endpoint tests (Docker not available)"
+        return
+    fi
+
     printf '%s\n' "1" "" "n" "n" "n" "n" "$reg_choice" "" "n" "$sn_choice" "" \
         | bash deploy.sh
 

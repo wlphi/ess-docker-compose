@@ -16,7 +16,7 @@ fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 gen_secret() { openssl rand -base64 32 | tr -d "=+/" | cut -c1-32; }
 gen_hex()    { openssl rand -hex 32; }
 
-sudo docker ps &>/dev/null || fail "Cannot reach Docker. Is it running?"
+[[ "${SKIP_START:-false}" != "true" ]] && { sudo docker ps &>/dev/null || fail "Cannot reach Docker. Is it running?"; }
 
 echo ""
 echo "Matrix Stack — Quick Start"
@@ -370,14 +370,34 @@ fi
 # ── Synapse homeserver.yaml ───────────────────────────────────────────────────
 
 if [[ ! -f "synapse/data/homeserver.yaml" ]]; then
-    info "Generating Synapse config..."
-    sudo docker run --rm \
-        -v "$(pwd)/synapse/data:/data" \
-        -e SYNAPSE_SERVER_NAME="${MATRIX_DOMAIN}" \
-        -e SYNAPSE_REPORT_STATS=no \
-        matrixdotorg/synapse:latest generate 2>/dev/null
-    sudo chown -R "$(id -u):$(id -g)" synapse/data/
-    ok "Synapse config generated"
+    if [[ "${SKIP_START:-false}" == "true" ]]; then
+        info "Generating minimal Synapse config (config-only mode)..."
+        cat > synapse/data/homeserver.yaml << EOF
+server_name: "${MATRIX_DOMAIN}"
+pid_file: /data/homeserver.pid
+listeners:
+  - port: 8008
+    tls: false
+    type: http
+    x_forwarded: true
+    resources:
+      - names: [client, federation]
+        compress: false
+log_config: "/data/${MATRIX_DOMAIN}.log.config"
+media_store_path: /data/media_store
+report_stats: false
+EOF
+        ok "Synapse config generated"
+    else
+        info "Generating Synapse config..."
+        sudo docker run --rm \
+            -v "$(pwd)/synapse/data:/data" \
+            -e SYNAPSE_SERVER_NAME="${MATRIX_DOMAIN}" \
+            -e SYNAPSE_REPORT_STATS=no \
+            matrixdotorg/synapse:latest generate 2>/dev/null
+        sudo chown -R "$(id -u):$(id -g)" synapse/data/
+        ok "Synapse config generated"
+    fi
 fi
 
 info "Patching Synapse config..."
@@ -449,11 +469,13 @@ EOF
 ok "Synapse metrics config written"
 
 # Fix ownership: Synapse runs as uid 991 inside Docker
-info "Fixing Synapse data permissions..."
-sudo chown -R 991:991 synapse/data/
-sudo chmod 640 synapse/data/*.signing.key 2>/dev/null || true
-sudo chown -R 65532:65532 mas/data/
-ok "Permissions fixed"
+if [[ "${SKIP_START:-false}" != "true" ]]; then
+    info "Fixing Synapse data permissions..."
+    sudo chown -R 991:991 synapse/data/
+    sudo chmod 640 synapse/data/*.signing.key 2>/dev/null || true
+    sudo chown -R 65532:65532 mas/data/
+    ok "Permissions fixed"
+fi
 
 # ── Caddyfile ─────────────────────────────────────────────────────────────────
 
