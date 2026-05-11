@@ -97,13 +97,19 @@ cleanup_configs() {
     rm -f caddy/Caddyfile caddy/Caddyfile.production
     sudo rm -rf livekit 2>/dev/null || true
     mkdir -p livekit
-    rm -f appservices/doublepuppet.yaml
+    rm -f appservices/doublepuppet.yaml appservices/hookshot.yaml
+    rm -f prometheus/prometheus.yml prometheus/rules/synapse.rules.yml
+    rm -f grafana/provisioning/datasources/prometheus.yaml
+    rm -f grafana/provisioning/dashboards/dashboard.yaml
+    rm -f grafana/provisioning/dashboards/json/synapse.json
+    rm -f hookshot/config.yaml hookshot/registration.yaml
     # These may be root-owned from docker run or previous deploys
     sudo rm -f mas/config/config.yaml 2>/dev/null || true
     sudo rm -f element/config/config.json 2>/dev/null || true
     sudo rm -f fluffychat/config.json 2>/dev/null || true
     sudo rm -f authelia/config/configuration.yml authelia/config/users_database.yml 2>/dev/null || true
     sudo rm -f synapse/data/homeserver.yaml synapse/data/homeserver.yaml.bak 2>/dev/null || true
+    sudo rm -f synapse/data/metrics.yaml 2>/dev/null || true
 }
 
 # ─── Assertions ───────────────────────────────────────────────────────────────
@@ -636,6 +642,18 @@ assert_quickstart_configs() {
     assert_contains "caddy/Caddyfile"             "reverse_proxy fluffychat:80" "Caddyfile → FluffyChat reverse_proxy"
     assert_contains "mas/config/config.yaml"      "im.fluffychat://login"    "MAS → FluffyChat native redirect URI registered"
 
+    # Monitoring (quickstart always enables it)
+    assert_file "prometheus/prometheus.yml"       "prometheus/prometheus.yml generated"
+    assert_contains "prometheus/prometheus.yml"   "synapse:9000"             "Prometheus → scrapes Synapse metrics endpoint"
+    assert_file "grafana/provisioning/datasources/prometheus.yaml" "Grafana datasource provisioning generated"
+    assert_file "grafana/provisioning/dashboards/dashboard.yaml"   "Grafana dashboard provisioning generated"
+    assert_contains "caddy/Caddyfile"             "reverse_proxy grafana:3000" "Caddyfile → Grafana reverse_proxy"
+    assert_file "synapse/data/metrics.yaml"       "synapse/data/metrics.yaml generated"
+    assert_contains "synapse/data/metrics.yaml"   "enable_metrics: true"     "Synapse metrics.yaml → enable_metrics"
+    assert_contains "synapse/data/metrics.yaml"   "type: metrics"            "Synapse metrics.yaml → metrics listener"
+    assert_valid_yaml "prometheus/prometheus.yml"
+    assert_valid_yaml "synapse/data/metrics.yaml"
+
     # Syntax/parse validation
     assert_valid_yaml  "mas/config/config.yaml"
     assert_valid_yaml  "synapse/data/homeserver.yaml"
@@ -665,12 +683,14 @@ run_scenario() {
     #   [2] SSO provider choice:            (empty → 1=None)
     #   [3] Enable Element Call?            n
     #   [4] Enable FluffyChat?              n
-    #   [5] Allow open registration?        $reg_choice
-    #   [6] Custom Docker registry prefix:  (empty → default)
-    #   [7] Use hardened images?            n
-    #   [8] SERVER_NAME choice:             $sn_choice  (1=TLD, 2=subdomain)
-    #   [9] Press Enter to continue:        (empty)
-    printf '%s\n' "1" "" "n" "n" "$reg_choice" "" "n" "$sn_choice" "" \
+    #   [5] Enable monitoring?              n
+    #   [6] Enable hookshot?                n
+    #   [7] Allow open registration?        $reg_choice
+    #   [8] Custom Docker registry prefix:  (empty → default)
+    #   [9] Use hardened images?            n
+    #  [10] SERVER_NAME choice:             $sn_choice  (1=TLD, 2=subdomain)
+    #  [11] Press Enter to continue:        (empty)
+    printf '%s\n' "1" "" "n" "n" "n" "n" "$reg_choice" "" "n" "$sn_choice" "" \
         | bash deploy.sh
 
     assert_configs "$expected_sn" "$open_reg"
@@ -714,10 +734,14 @@ check_prereqs
 
 # ─── Static file sanity checks (no Docker needed) ────────────────────────────
 section "Static · docker-compose.yml integrity"
-assert_contains "docker-compose.yml" \
-    'ketesa'      "docker-compose.yml → ketesa service present"
-assert_contains "docker-compose.yml" \
-    'fluffychat'  "docker-compose.yml → fluffychat service present"
+assert_contains "docker-compose.yml" 'ketesa'            "docker-compose.yml → ketesa service present"
+assert_contains "docker-compose.yml" 'fluffychat'        "docker-compose.yml → fluffychat service present"
+assert_contains "docker-compose.yml" 'mautrix-discord'   "docker-compose.yml → discord bridge present"
+assert_contains "docker-compose.yml" 'mautrix-slack'     "docker-compose.yml → slack bridge present"
+assert_contains "docker-compose.yml" 'hookshot'          "docker-compose.yml → hookshot service present"
+assert_contains "docker-compose.yml" 'prometheus'        "docker-compose.yml → prometheus service present"
+assert_contains "docker-compose.yml" 'grafana'           "docker-compose.yml → grafana service present"
+assert_contains "docker-compose.yml" 'synapse-auto-compressor' "docker-compose.yml → auto-compressor service present"
 
 # Scenario A — TLD identity:       @user:example.test
 run_scenario \
@@ -741,20 +765,22 @@ info "Running deploy.sh production mode (piped stdin, SKIP_START=true)"
 #   [2] SSO provider choice:           (empty → 1=None)
 #   [3] Enable Element Call?           n
 #   [4] Enable FluffyChat?             n
-#   [5] Allow open registration?       n  (default: closed)
-#   [6] Custom Docker registry prefix: (empty)
-#   [7] Use hardened images?           n
-#   [8] Base domain:                   example.com
-#   [9] Matrix subdomain:              (empty → matrix)
-#  [10] Element subdomain:             (empty → element)
-#  [11] Admin subdomain:               (empty → admin)
-#  [12] Auth subdomain:                (empty → auth)   ← no FluffyChat subdomain since disabled
-#  [13] Authelia subdomain:            (empty → authelia)
-#  [14] SERVER_NAME choice:            1  (TLD: @user:example.com)
-#  [15] Matrix server address:         (empty → 10.0.1.10)
-#  [16] Authelia server address:       (empty → 10.0.1.20)
-#  [17] Let's Encrypt email:           (empty → admin@example.com)
-printf '%s\n' "3" "" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" "" "" \
+#   [5] Enable monitoring?             n
+#   [6] Enable hookshot?               n
+#   [7] Allow open registration?       n  (default: closed)
+#   [8] Custom Docker registry prefix: (empty)
+#   [9] Use hardened images?           n
+#  [10] Base domain:                   example.com
+#  [11] Matrix subdomain:              (empty → matrix)
+#  [12] Element subdomain:             (empty → element)
+#  [13] Admin subdomain:               (empty → admin)
+#  [14] Auth subdomain:                (empty → auth)   ← no FluffyChat/monitoring/hookshot subdomains since disabled
+#  [15] Authelia subdomain:            (empty → authelia)
+#  [16] SERVER_NAME choice:            1  (TLD: @user:example.com)
+#  [17] Matrix server address:         (empty → 10.0.1.10)
+#  [18] Authelia server address:       (empty → 10.0.1.20)
+#  [19] Let's Encrypt email:           (empty → admin@example.com)
+printf '%s\n' "3" "" "n" "n" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" "" "" \
     | SKIP_START=true bash deploy.sh
 
 header "Production Caddyfile assertions"
@@ -818,12 +844,14 @@ info "Running deploy.sh with open registration=y (piped stdin, SKIP_START=true)"
 #   [2] SSO provider choice:            (empty → 1=None)
 #   [3] Enable Element Call?            n
 #   [4] Enable FluffyChat?              n
-#   [5] Allow open registration?        y  ← testing the enabled path
-#   [6] Custom Docker registry prefix:  (empty)
-#   [7] Use hardened images?            n
-#   [8] SERVER_NAME choice:             1  (TLD)
-#   [9] Press Enter to continue:        (empty)
-printf '%s\n' "1" "" "n" "n" "y" "" "n" "1" "" \
+#   [5] Enable monitoring?              n
+#   [6] Enable hookshot?                n
+#   [7] Allow open registration?        y  ← testing the enabled path
+#   [8] Custom Docker registry prefix:  (empty)
+#   [9] Use hardened images?            n
+#  [10] SERVER_NAME choice:             1  (TLD)
+#  [11] Press Enter to continue:        (empty)
+printf '%s\n' "1" "" "n" "n" "n" "n" "y" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
 assert_configs "example.test" "true"
 
@@ -837,12 +865,14 @@ info "Running deploy.sh with Element Call=y (piped stdin, SKIP_START=true)"
 #   [2] SSO provider choice:            (empty → 1=None)
 #   [3] Enable Element Call?            y  ← testing Element Call path
 #   [4] Enable FluffyChat?              n
-#   [5] Allow open registration?        n
-#   [6] Custom Docker registry prefix:  (empty)
-#   [7] Use hardened images?            n
-#   [8] SERVER_NAME choice:             1  (TLD)
-#   [9] Press Enter to continue:        (empty)
-printf '%s\n' "1" "" "y" "n" "n" "" "n" "1" "" \
+#   [5] Enable monitoring?              n
+#   [6] Enable hookshot?                n
+#   [7] Allow open registration?        n
+#   [8] Custom Docker registry prefix:  (empty)
+#   [9] Use hardened images?            n
+#  [10] SERVER_NAME choice:             1  (TLD)
+#  [11] Press Enter to continue:        (empty)
+printf '%s\n' "1" "" "y" "n" "n" "n" "n" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
 header "Element Call config assertions"
 assert_file "livekit/livekit.yaml"                                        "livekit/livekit.yaml generated"
@@ -870,18 +900,20 @@ info "Running deploy.sh production single-server mode (piped stdin, SKIP_START=t
 #   [2] SSO provider choice:           (empty → 1=None)
 #   [3] Enable Element Call?           n
 #   [4] Enable FluffyChat?             n
-#   [5] Allow open registration?       n
-#   [6] Custom Docker registry prefix: (empty)
-#   [7] Use hardened images?           n
-#   [8] Base domain:                   example.com
-#   [9] Matrix subdomain:              (empty → matrix)
-#  [10] Element subdomain:             (empty → element)
-#  [11] Admin subdomain:               (empty → admin)
-#  [12] Auth subdomain:                (empty → auth)   ← no FluffyChat subdomain since disabled
-#  [13] Authelia subdomain:            (empty → authelia)
-#  [14] SERVER_NAME choice:            1  (TLD: @user:example.com)
-#  [15] Let's Encrypt email:           (empty → admin@example.com)  ← no server IP prompts
-printf '%s\n' "2" "" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" \
+#   [5] Enable monitoring?             n
+#   [6] Enable hookshot?               n
+#   [7] Allow open registration?       n
+#   [8] Custom Docker registry prefix: (empty)
+#   [9] Use hardened images?           n
+#  [10] Base domain:                   example.com
+#  [11] Matrix subdomain:              (empty → matrix)
+#  [12] Element subdomain:             (empty → element)
+#  [13] Admin subdomain:               (empty → admin)
+#  [14] Auth subdomain:                (empty → auth)   ← no FluffyChat/monitoring/hookshot subdomains since disabled
+#  [15] Authelia subdomain:            (empty → authelia)
+#  [16] SERVER_NAME choice:            1  (TLD: @user:example.com)
+#  [17] Let's Encrypt email:           (empty → admin@example.com)  ← no server IP prompts
+printf '%s\n' "2" "" "n" "n" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" \
     | SKIP_START=true bash deploy.sh
 
 header "Production single-server Caddyfile assertions"
@@ -912,11 +944,13 @@ info "Running deploy.sh with custom OIDC=3 (piped stdin, SKIP_START=true)"
 #   [5] OIDC client secret:             test-client-secret
 #   [6] Enable Element Call?            n
 #   [7] Enable FluffyChat?              n
-#   [8] Custom Docker registry prefix:  (empty)
-#   [9] Use hardened images?            n
-#  [10] SERVER_NAME choice:             1  (TLD)
-#  [11] Press Enter to continue:        (empty)
-printf '%s\n' "1" "3" "https://auth.example.test/app/o/matrix/" "test-client-id" "test-client-secret" "n" "n" "" "n" "1" "" \
+#   [8] Enable monitoring?              n
+#   [9] Enable hookshot?                n
+#  [10] Custom Docker registry prefix:  (empty)
+#  [11] Use hardened images?            n
+#  [12] SERVER_NAME choice:             1  (TLD)
+#  [13] Press Enter to continue:        (empty)
+printf '%s\n' "1" "3" "https://auth.example.test/app/o/matrix/" "test-client-id" "test-client-secret" "n" "n" "n" "n" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
 header "Custom OIDC config assertions"
 assert_file "mas/config/config.yaml"                              "mas/config/config.yaml generated"
@@ -950,11 +984,13 @@ info "Running deploy.sh with Authelia SSO (piped stdin, SKIP_START=true)"
 #   [2] SSO provider choice:           2  (Authelia)
 #   [3] Enable Element Call?           n
 #   [4] Enable FluffyChat?             n
-#   [5] Custom Docker registry prefix: (empty)
-#   [6] Use hardened images?           n
-#   [7] SERVER_NAME choice:            1  (TLD: @user:example.test)
-#   [8] Press Enter to continue:       (empty)
-printf '%s\n' "1" "2" "n" "n" "" "n" "1" "" \
+#   [5] Enable monitoring?             n
+#   [6] Enable hookshot?               n
+#   [7] Custom Docker registry prefix: (empty)
+#   [8] Use hardened images?           n
+#   [9] SERVER_NAME choice:            1  (TLD: @user:example.test)
+#  [10] Press Enter to continue:       (empty)
+printf '%s\n' "1" "2" "n" "n" "n" "n" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
 header "Authelia config assertions"
 assert_file "authelia/config/configuration.yml"   "authelia/config/configuration.yml generated"

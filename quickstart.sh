@@ -51,6 +51,7 @@ ELEMENT_DOMAIN="element.${DOMAIN}"
 ADMIN_DOMAIN="admin.${DOMAIN}"
 AUTH_DOMAIN="auth.${DOMAIN}"
 FLUFFYCHAT_DOMAIN="chat.${DOMAIN}"
+MONITORING_DOMAIN="monitoring.${DOMAIN}"
 CALL_DOMAIN="call.${DOMAIN}"
 RTC_DOMAIN="rtc.${DOMAIN}"
 
@@ -93,8 +94,10 @@ mkdir -p mas/{config,data,certs}
 mkdir -p element/config
 mkdir -p caddy/{data,config}
 mkdir -p livekit
-mkdir -p bridges/{telegram,whatsapp,signal}/config
+mkdir -p bridges/{telegram,whatsapp,signal,discord,slack}/config
 mkdir -p appservices
+mkdir -p prometheus/rules
+mkdir -p grafana/provisioning/{datasources,dashboards,dashboards/json}
 chmod 755 element/config
 
 # ── .env ─────────────────────────────────────────────────────────────────────
@@ -285,6 +288,63 @@ cat > fluffychat/config.json << EOF
 EOF
 ok "FluffyChat config written"
 
+# ── Prometheus + Grafana config ───────────────────────────────────────────────
+
+info "Writing Prometheus config..."
+cat > prometheus/prometheus.yml << EOF
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: synapse
+    static_configs:
+      - targets: ['synapse:9000']
+EOF
+
+if curl -sf --max-time 10 \
+    "https://raw.githubusercontent.com/element-hq/synapse/develop/contrib/grafana/synapse.rules.yml" \
+    -o prometheus/rules/synapse.rules.yml 2>/dev/null; then
+    ok "Synapse recording rules downloaded"
+else
+    warn "Could not download Synapse recording rules — some Grafana panels may be empty"
+fi
+
+cat > grafana/provisioning/datasources/prometheus.yaml << EOF
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+EOF
+
+cat > grafana/provisioning/dashboards/dashboard.yaml << EOF
+apiVersion: 1
+providers:
+  - name: Synapse
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
+EOF
+
+if curl -sf --max-time 15 \
+    "https://grafana.com/api/dashboards/10046/revisions/latest/download" \
+    -o grafana/provisioning/dashboards/json/synapse.json 2>/dev/null; then
+    ok "Synapse Grafana dashboard downloaded (ID 10046)"
+else
+    warn "Could not download Synapse Grafana dashboard — import manually in Grafana (ID 10046)"
+fi
+ok "Prometheus + Grafana config written"
+
 # ── LiveKit config ────────────────────────────────────────────────────────────
 
 if $USE_ELEMENT_CALL; then
@@ -372,6 +432,21 @@ EOF
 fi
 
 ok "Synapse config patched"
+
+# Write Prometheus metrics listener as a separate config file (loaded alongside
+# homeserver.yaml via SYNAPSE_CONFIG_PATH=/data directory mode)
+info "Enabling Synapse Prometheus metrics..."
+cat > synapse/data/metrics.yaml << EOF
+# Synapse Prometheus metrics — loaded alongside homeserver.yaml
+enable_metrics: true
+
+listeners:
+  - type: metrics
+    port: 9000
+    bind_addresses: ['0.0.0.0']
+    resources: []
+EOF
+ok "Synapse metrics config written"
 
 # Fix ownership: Synapse runs as uid 991 inside Docker
 info "Fixing Synapse data permissions..."
@@ -513,6 +588,10 @@ ${ADMIN_DOMAIN} {
 ${FLUFFYCHAT_DOMAIN} {
     reverse_proxy fluffychat:80
 }
+
+${MONITORING_DOMAIN} {
+    reverse_proxy grafana:3000
+}
 EOF
 
 if $USE_ELEMENT_CALL; then
@@ -559,11 +638,11 @@ for i in {1..30}; do
 done
 ok "PostgreSQL ready"
 
-CORE_SERVICES="postgres synapse mas element fluffychat ketesa caddy"
+CORE_SERVICES="postgres synapse mas element fluffychat ketesa caddy prometheus grafana"
 if $USE_ELEMENT_CALL; then CORE_SERVICES="${CORE_SERVICES} livekit lk-jwt-service element-call"; fi
 
 info "Starting all services..."
-sudo docker compose --profile single-machine --profile fluffychat up -d --remove-orphans ${CORE_SERVICES}
+sudo docker compose --profile single-machine --profile fluffychat --profile monitoring up -d --remove-orphans ${CORE_SERVICES}
 echo ""
 
 fi
@@ -577,6 +656,7 @@ echo "  FluffyChat:     https://${FLUFFYCHAT_DOMAIN}"
 echo "  Matrix API:     https://${MATRIX_DOMAIN}"
 echo "  MAS Auth:       https://${AUTH_DOMAIN}"
 echo "  Ketesa:         https://${ADMIN_DOMAIN}"
+echo "  Grafana:        https://${MONITORING_DOMAIN}"
 if $USE_ELEMENT_CALL; then echo "  Element Call:   https://${CALL_DOMAIN}"; fi
 echo ""
 echo "DNS — point all subdomains to this server:"
@@ -585,6 +665,7 @@ echo "  ${ELEMENT_DOMAIN}"
 echo "  ${FLUFFYCHAT_DOMAIN}"
 echo "  ${ADMIN_DOMAIN}"
 echo "  ${AUTH_DOMAIN}"
+echo "  ${MONITORING_DOMAIN}"
 if $USE_ELEMENT_CALL; then
     echo "  ${CALL_DOMAIN}"
     echo "  ${RTC_DOMAIN}"
@@ -598,7 +679,7 @@ echo ""
 echo "To set up messaging bridges (WhatsApp, Signal, Telegram):"
 echo "  ./setup-bridges.sh"
 echo ""
-_QS_CMD="sudo docker compose --profile single-machine"
+_QS_CMD="sudo docker compose --profile single-machine --profile monitoring"
 if $USE_ELEMENT_CALL; then _QS_CMD="${_QS_CMD} --profile element-call"; fi
 echo "Logs:  ${_QS_CMD} logs -f"
 echo "Stop:  ${_QS_CMD} down"

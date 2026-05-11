@@ -31,7 +31,7 @@ services:
     container_name: matrix-synapse
     restart: unless-stopped
     environment:
-      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+      SYNAPSE_CONFIG_PATH: /data
       SSL_CERT_FILE: /certs/caddy-ca.crt
     volumes:
       - ./synapse/data:/data
@@ -251,6 +251,107 @@ services:
       synapse:
         condition: service_healthy
 
+  # mautrix-discord Bridge (Go megabridge)
+  mautrix-discord:
+    image: ${DISCORD_IMAGE:-dock.mau.dev/mautrix/discord:latest}
+    container_name: matrix-bridge-discord
+    restart: unless-stopped
+    volumes:
+      - ./bridges/discord/config:/data
+    networks:
+      - matrix-network
+    depends_on:
+      synapse:
+        condition: service_healthy
+
+  # mautrix-slack Bridge (Go megabridge — Megaslack)
+  mautrix-slack:
+    image: ${SLACK_IMAGE:-dock.mau.dev/mautrix/slack:latest}
+    container_name: matrix-bridge-slack
+    restart: unless-stopped
+    volumes:
+      - ./bridges/slack/config:/data
+    networks:
+      - matrix-network
+    depends_on:
+      synapse:
+        condition: service_healthy
+
+  # matrix-hookshot — connects rooms to GitHub, GitLab, JIRA, RSS, and generic webhooks
+  hookshot:
+    profiles:
+      - hookshot
+    image: ${HOOKSHOT_IMAGE:-ghcr.io/matrix-org/matrix-hookshot:latest}
+    container_name: matrix-hookshot
+    restart: unless-stopped
+    volumes:
+      - ./hookshot:/data
+    networks:
+      - matrix-network
+    depends_on:
+      synapse:
+        condition: service_healthy
+
+  # synapse_auto_compressor — continuously compresses state_groups_state to reduce DB bloat
+  synapse-auto-compressor:
+    build:
+      context: .
+      dockerfile: synapse_auto_compressor/Dockerfile
+    image: matrix-auto-compressor:local
+    container_name: matrix-auto-compressor
+    restart: unless-stopped
+    environment:
+      RUST_LOG: info
+    command:
+      - --db-url
+      - postgresql://synapse:${POSTGRES_PASSWORD}@postgres/synapse
+      - --chunk-size
+      - "500"
+    networks:
+      - matrix-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Prometheus — scrapes Synapse metrics (local testing)
+  prometheus:
+    profiles:
+      - monitoring
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:latest}
+    container_name: matrix-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    networks:
+      - matrix-network
+
+  # Grafana — metrics visualization (local testing)
+  grafana:
+    profiles:
+      - monitoring
+    image: ${GRAFANA_IMAGE:-grafana/grafana:latest}
+    container_name: matrix-grafana
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: "https://${MONITORING_DOMAIN:-monitoring.example.test}"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    expose:
+      - "3000"
+    networks:
+      - matrix-network
+    depends_on:
+      - prometheus
+
 networks:
   matrix-network:
     driver: bridge
@@ -259,3 +360,5 @@ volumes:
   postgres-data:
   synapse-data:
   mas-data:
+  prometheus-data:
+  grafana-data:
