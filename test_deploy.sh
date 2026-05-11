@@ -242,6 +242,7 @@ assert_valid_caddyfile() {
 assert_configs() {
     local server_name="$1"
     local open_reg="${2:-false}"   # "true" when open registration was chosen
+    local skip_start="${3:-false}" # "true" when deploy ran with SKIP_START=true (no chown)
     local matrix_domain="matrix.example.test"
 
     header "Config assertions  (SERVER_NAME=${server_name})"
@@ -255,8 +256,12 @@ assert_configs() {
     # Permissions — container UIDs must be able to read/write their data (regression: issue #21)
     assert_world_executable "mas/config"             "mas/config/ dir"
     assert_world_readable   "mas/config/config.yaml" "mas/config/config.yaml"
-    assert_owned_by         "mas/data"     "65532"   "mas/data/"
-    assert_owned_by         "synapse/data" "991"     "synapse/data/"
+    if [[ "$skip_start" != "true" ]]; then
+        assert_owned_by "mas/data"     "65532"   "mas/data/"
+        assert_owned_by "synapse/data" "991"     "synapse/data/"
+    else
+        warn "Skipping ownership checks (SKIP_START mode — chown not run)"
+    fi
 
     # MAS config
     assert_file "mas/config/config.yaml" "mas/config/config.yaml generated"
@@ -488,6 +493,11 @@ assert_endpoints() {
     info "Allowing 20s for full service initialization..."
     sleep 20
 
+    # Dump MAS logs upfront so crash reasons are visible in test output
+    info "=== MAS logs (last 30 lines) ==="
+    $COMPOSE_CMD -f "$COMPOSE_FILE" logs mas --tail=30 2>/dev/null || true
+    info "=== end MAS logs ==="
+
     setup_mas_ca
 
     # Synapse /health
@@ -605,6 +615,7 @@ assert_endpoints() {
 # ─── Quickstart config assertions ────────────────────────────────────────────
 assert_quickstart_configs() {
     local domain="$1"
+    local skip_start="${2:-false}" # "true" when quickstart ran with SKIP_START=true
     local matrix_domain="matrix.${domain}"
     local auth_domain="auth.${domain}"
 
@@ -618,8 +629,12 @@ assert_quickstart_configs() {
     # Permissions — container UIDs must be able to read/write their data (regression: issue #21)
     assert_world_executable "mas/config"             "mas/config/ dir"
     assert_world_readable   "mas/config/config.yaml" "mas/config/config.yaml"
-    assert_owned_by         "mas/data"     "65532"   "mas/data/"
-    assert_owned_by         "synapse/data" "991"     "synapse/data/"
+    if [[ "$skip_start" != "true" ]]; then
+        assert_owned_by "mas/data"     "65532"   "mas/data/"
+        assert_owned_by "synapse/data" "991"     "synapse/data/"
+    else
+        warn "Skipping ownership checks (SKIP_START mode — chown not run)"
+    fi
 
     assert_file "mas/config/config.yaml"      "mas/config/config.yaml generated"
     assert_contains "mas/config/config.yaml"  "homeserver: '${matrix_domain}'"       "MAS → homeserver"
@@ -712,7 +727,7 @@ run_scenario() {
         warn "Docker not available — running config-only for: $name"
         printf '%s\n' "1" "" "n" "n" "n" "n" "$reg_choice" "" "n" "$sn_choice" "" \
             | SKIP_START=true bash deploy.sh
-        assert_configs "$expected_sn" "$open_reg"
+        assert_configs "$expected_sn" "$open_reg" "true"
         warn "Skipping endpoint tests (Docker not available)"
         return
     fi
@@ -837,7 +852,7 @@ info "Running quickstart.sh (piped stdin, SKIP_START=true)"
 #   [4] Allow open registration?   n  (default: closed)
 printf '%s\n' "example.test" "test@example.test" "n" "n" \
     | SKIP_START=true bash quickstart.sh
-assert_quickstart_configs "example.test"
+assert_quickstart_configs "example.test" "true"
 if [[ "$SKIP_INTEGRATION" != "true" ]]; then
     warn "Quickstart endpoint tests skipped (stack not started in SKIP_START mode)"
 fi
@@ -880,7 +895,7 @@ info "Running deploy.sh with open registration=y (piped stdin, SKIP_START=true)"
 #  [11] Press Enter to continue:        (empty)
 printf '%s\n' "1" "" "n" "n" "n" "n" "y" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
-assert_configs "example.test" "true"
+assert_configs "example.test" "true" "true"
 
 # Scenario E — Element Call enabled (config only, validates livekit.yaml + no participant_limit)
 section "E · Element Call enabled  (config only)"

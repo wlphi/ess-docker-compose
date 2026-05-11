@@ -1096,7 +1096,7 @@ clients:
       - 'io.element.app:/callback'
 
   # FluffyChat (public client — web + native apps)
-  - client_id: '01FLFFCHT0000000000000000FC'
+  - client_id: '01FFCHAT00000000000000FC00'
     client_auth_method: none
     redirect_uris:
       - 'https://${FLUFFYCHAT_DOMAIN}'
