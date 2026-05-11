@@ -587,6 +587,78 @@ Neither Matrix/Synapse nor Caddy documentation clearly explains:
 
 ---
 
+## 11. FluffyChat Cross-Signing Setup with MAS
+
+### Severity
+**MODERATE** — Confusing UX, but workaround exists
+
+### Problem
+When logging into FluffyChat with MAS authentication, attempting to set up encryption or chat backup redirects users to:
+```
+https://auth.example.com/account/?action=org.matrix.cross_signing_reset
+```
+Users are told to "click the continue button" on this page, but **no continue button exists** — the page only shows the account overview.
+
+### Root Cause
+A gap between specification and implementation:
+1. **MSC4312** (merged Nov 2025) defines the `org.matrix.cross_signing_reset` account management action
+2. **MAS v1.15.0** advertises this action in its `account_management_actions_supported` capabilities
+3. **FluffyChat** sees this capability and tries to use it
+4. **However**, MAS does not yet have the UI implemented for handling this action
+
+### Symptoms
+- FluffyChat prompts "Reset cryptographic identity?" or "Activate chat backup"
+- Clicking opens MAS account page in browser with no continue button
+- Cross-signing cannot be set up through FluffyChat
+
+### Verification
+```bash
+curl -s "https://auth.example.com/.well-known/openid-configuration" | jq '.account_management_actions_supported'
+```
+Will include `"org.matrix.cross_signing_reset"` even though the UI is not implemented.
+
+### Solution: Set Up Cross-Signing via Element First
+
+**Step 1 — Set up cross-signing in Element:**
+1. Open Element Web (`https://element.example.com`)
+2. Avatar → All Settings → Security & Privacy → Set up Secure Backup
+3. Generate a Security Key and **save it somewhere safe**
+4. Complete the setup
+
+**Step 2 — Use the same key in FluffyChat:**
+1. FluffyChat → Settings → Security → Chat Backup
+2. Enter the security key/passphrase from Step 1
+
+### Alternative: Reset Cross-Signing via Database
+
+If cross-signing is in a broken state (empty secret storage):
+
+```bash
+docker compose exec postgres psql -U synapse -d synapse
+```
+```sql
+BEGIN;
+DELETE FROM e2e_cross_signing_keys WHERE user_id = '@username:example.com';
+DELETE FROM e2e_cross_signing_signatures WHERE user_id = '@username:example.com';
+DELETE FROM account_data WHERE user_id = '@username:example.com'
+  AND account_data_type IN (
+    'm.cross_signing.master',
+    'm.cross_signing.self_signing',
+    'm.cross_signing.user_signing',
+    'm.megolm_backup.v1'
+  );
+COMMIT;
+```
+
+After reset, log out and back in to FluffyChat — it will prompt to set up encryption fresh.
+
+### Future Resolution
+Track at:
+- [MSC4312](https://github.com/matrix-org/matrix-spec-proposals/pull/4312)
+- [MAS Issue #1942](https://github.com/matrix-org/matrix-authentication-service/issues/1942)
+
+---
+
 ## Configuration Changes Checklist
 
 When making changes to the stack, follow this checklist to avoid common issues:

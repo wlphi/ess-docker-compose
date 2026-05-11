@@ -73,8 +73,8 @@ sudo sed -i "s|    address: https://example.com|    address: http://synapse:8008
 sudo sed -i "s|    domain: example.com|    domain: ${MATRIX_DOMAIN}|" bridges/telegram/config/config.yaml
 # Bridge's own address
 sudo sed -i "s|    address: http://localhost:29317|    address: http://mautrix-telegram:29317|" bridges/telegram/config/config.yaml
-# Database (Telegram uses 'database:' key, not 'uri:')
-sudo sed -i "s|    database: postgres://username:password@hostname/dbname|    database: postgres://synapse:${POSTGRES_PASSWORD}@postgres/telegram|" bridges/telegram/config/config.yaml
+# Database
+sudo sed -i "s|    uri: postgres://username:password@hostname/dbname?sslmode=disable|    uri: postgres://synapse:${POSTGRES_PASSWORD}@postgres/telegram?sslmode=disable|" bridges/telegram/config/config.yaml
 # Permissions: remove all placeholder entries (sentinel for "not configured"), add domain admin
 sudo sed -i "/'@admin:example.com': admin/d" bridges/telegram/config/config.yaml
 sudo sed -i "/        example.com: full/d" bridges/telegram/config/config.yaml

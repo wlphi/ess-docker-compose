@@ -95,13 +95,6 @@ clients:
       - 'https://{{ELEMENT_DOMAIN}}/mobile_guide/'
       - 'io.element.app:/callback'
 
-  # Element Admin (public client)
-  - client_id: '01ADMN00000000000000000000'
-    client_auth_method: none
-    redirect_uris:
-      - 'https://{{ADMIN_DOMAIN}}/'
-      - 'https://{{ADMIN_DOMAIN}}'
-
   # Synapse (confidential client)
   - client_id: '0000000000000000000SYNAPSE'
     client_auth_method: client_secret_basic

@@ -6,7 +6,7 @@
 # Simple production deployment (recommended for most users)
 ./quickstart.sh
 
-# Advanced deployment (local testing, Authelia, multi-machine)
+# Advanced deployment (local testing, Authelia, multi-machine, optional monitoring/hookshot)
 ./deploy.sh
 
 # Set up messaging bridges (after core stack is running)
@@ -16,13 +16,14 @@
 ## Service Management
 
 ```bash
-# Status
+# Status (adapt profiles to what you enabled)
 docker compose ps
-docker compose --profile single-machine ps     # if started via quickstart.sh
-docker compose --profile element-call ps       # if Element Call is enabled
+docker compose --profile single-machine ps
+docker compose --profile single-machine --profile monitoring ps
 
 # Start
 docker compose --profile single-machine up -d
+docker compose --profile single-machine --profile monitoring up -d
 
 # Stop
 docker compose --profile single-machine down
@@ -60,9 +61,11 @@ docker compose logs | grep -i error
 | Service | URL |
 |---------|-----|
 | Element Web | https://element.yourdomain.com |
+| FluffyChat | https://chat.yourdomain.com (optional) |
 | Matrix API | https://matrix.yourdomain.com |
 | MAS Auth | https://auth.yourdomain.com |
-| Element Admin | https://admin.yourdomain.com |
+| Ketesa Admin | https://admin.yourdomain.com |
+| Grafana | https://monitoring.yourdomain.com (optional) |
 | Element Call | https://call.yourdomain.com (optional) |
 
 ## Access URLs (local testing)
@@ -70,9 +73,11 @@ docker compose logs | grep -i error
 | Service | URL |
 |---------|-----|
 | Element Web | https://element.example.test |
+| FluffyChat | https://chat.example.test (optional) |
 | Matrix API | https://matrix.example.test |
 | MAS Auth | https://auth.example.test |
-| Element Admin | https://admin.example.test |
+| Ketesa Admin | https://admin.example.test |
+| Grafana | https://monitoring.example.test (optional) |
 | Authelia | https://authelia.example.test (optional) |
 
 ## User Management
@@ -100,9 +105,13 @@ docker compose exec postgres psql -U synapse -d mas
 # Dump all databases
 docker compose exec -T postgres pg_dumpall -U synapse > backup-$(date +%Y%m%d).sql
 
-# Database sizes
+# Database sizes (useful for checking state_groups_state bloat)
 docker compose exec postgres psql -U synapse -c \
   "SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database;"
+
+# Check state_groups_state size (largest table in most Synapse installs)
+docker compose exec postgres psql -U synapse -d synapse -c \
+  "SELECT pg_size_pretty(pg_total_relation_size('state_groups_state'));"
 ```
 
 ## Backup
@@ -133,6 +142,9 @@ docker compose exec postgres pg_isready -U synapse
 
 # Check Synapse health
 curl http://localhost:8008/health
+
+# Check Synapse metrics (if monitoring enabled)
+curl http://localhost:9000/metrics | head -20
 ```
 
 ## Troubleshooting
@@ -167,20 +179,45 @@ docker ps --filter name=matrix
 docker compose logs --tail=30 mautrix-whatsapp
 docker compose logs --tail=30 mautrix-signal
 docker compose logs --tail=30 mautrix-telegram
+docker compose logs --tail=30 mautrix-discord
+docker compose logs --tail=30 mautrix-slack
 
 # Restart a bridge
 docker compose restart mautrix-whatsapp
+docker compose restart mautrix-discord
 
 # Full bridge setup (run after core stack is running)
 ./setup-bridges.sh
+
+# Hookshot logs (if enabled)
+docker compose --profile hookshot logs --tail=30 hookshot
+```
+
+## Monitoring
+
+```bash
+# Grafana is at https://monitoring.yourdomain.com (or https://monitoring.example.test)
+# Default credentials: admin / admin (change on first login)
+
+# Check Prometheus targets
+curl http://localhost:9090/api/v1/targets | jq '.data.activeTargets[] | {job: .labels.job, health}'
+
+# Check Synapse metrics directly
+curl http://synapse:9000/metrics 2>/dev/null | grep synapse_storage_state_groups_state_count
+
+# Reload Prometheus config (without restart)
+curl -X POST http://localhost:9090/-/reload
+
+# Grafana logs
+docker compose --profile monitoring logs --tail=30 grafana
 ```
 
 ## Local Testing (extra steps)
 
 ```bash
 # Add to /etc/hosts (both IPv4 and IPv6 required)
-echo "127.0.0.1  matrix.example.test element.example.test auth.example.test authelia.example.test" | sudo tee -a /etc/hosts
-echo "::1        matrix.example.test element.example.test auth.example.test authelia.example.test" | sudo tee -a /etc/hosts
+echo "127.0.0.1  matrix.example.test element.example.test auth.example.test admin.example.test authelia.example.test monitoring.example.test" | sudo tee -a /etc/hosts
+echo "::1        matrix.example.test element.example.test auth.example.test admin.example.test authelia.example.test monitoring.example.test" | sudo tee -a /etc/hosts
 
 # Test with self-signed cert
 curl -k https://matrix.example.test/_matrix/client/versions
@@ -198,6 +235,8 @@ docker compose restart mas
 | `homeserver.domain not configured` (bridge) | Run `setup-bridges.sh` |
 | `as_token was not accepted` | Registration not loaded in Synapse — check `homeserver.yaml` |
 | MAS CSS missing | Add `- name: assets` to MAS listener resources |
-| Element Admin: `TypeError: Failed to fetch` | Add `- name: adminapi` to MAS listener resources |
+| Ketesa: `TypeError: Failed to fetch` | Add `- name: adminapi` to MAS listener resources |
 | `Template rendered to empty string` | Set `fetch_userinfo: true` in MAS upstream provider |
 | Bridge: `Connection refused` | Bridge hostname is 127.0.0.1 — must be 0.0.0.0 in config |
+| Grafana: no data | Check Prometheus target health at `:9090/targets`; verify Synapse metrics enabled |
+| Hookshot: `Unrecognized token` | Check `hookshot/config.yaml` for invalid YAML (common after manual edits) |
