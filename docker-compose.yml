@@ -146,13 +146,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      # Note: Redis/Authelia dependency removed - works with or without Authelia
-    # Healthcheck disabled: MAS uses distroless image without curl
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
 
   # mautrix-discord Bridge (Go megabridge)
   mautrix-discord:

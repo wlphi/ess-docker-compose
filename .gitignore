@@ -49,6 +49,12 @@ authelia-server/
 caddy/Caddyfile
 caddy/Caddyfile.production
 
+# Script result files (may contain PII: room names, phone numbers, user IDs)
+*-results.json
+
+# Claude Code local settings (may contain pre-approved commands or tokens)
+.claude/settings.local.json
+
 # macOS
 .DS_Store
 
