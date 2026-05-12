@@ -210,6 +210,8 @@ clients:
       - 'https://${ELEMENT_DOMAIN}'
       - 'https://${ELEMENT_DOMAIN}/mobile_guide/'
       - 'io.element.app:/callback'
+      - 'http://localhost'
+      - 'http://127.0.0.1'
 
   - client_id: '01ADMN00000000000000000000'
     client_auth_method: none
