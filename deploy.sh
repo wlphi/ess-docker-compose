@@ -21,13 +21,13 @@ DOCKER_COMPOSE_CMD="sudo docker compose"
 echo -e "${YELLOW}Using sudo for docker commands.${NC}"
 echo ""
 
-# Test docker access
-if ! sudo docker ps &> /dev/null; then
+# Test docker access (skip when SKIP_START=true for CI/testing without Docker)
+if [[ "${SKIP_START:-false}" != "true" ]] && ! sudo docker ps &> /dev/null; then
     echo -e "${RED}Error: Cannot access Docker. Please ensure Docker is running.${NC}"
     exit 1
 fi
 
-clear
+clear 2>/dev/null || true
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║       Matrix Stack Automated Deployment Script            ║${NC}"
 echo -e "${BLUE}║                  Interactive Setup                         ║${NC}"
@@ -82,11 +82,20 @@ echo ""
 # ============================================================================
 echo -e "${YELLOW}Checking for existing data directories...${NC}"
 
+# In config-only mode there is no live stack, so skip all data-dir cleanup
+if [[ "${SKIP_START:-false}" == "true" ]]; then
+    echo -e "${GREEN}✓${NC} Config-only mode — skipping data directory cleanup"
+    echo ""
+fi
+
 EXISTING_DATA=""
 PRESERVED_CLIENT_SECRET=""  # Will store existing CLIENT_SECRET to preserve Authelia integration
+
+if [[ "${SKIP_START:-false}" != "true" ]]; then
 [[ -d "postgres/data" ]] && [[ "$(ls -A postgres/data 2>/dev/null)" ]] && EXISTING_DATA="${EXISTING_DATA}postgres/data "
 [[ -d "synapse/data" ]] && [[ -f "synapse/data/homeserver.yaml" ]] && EXISTING_DATA="${EXISTING_DATA}synapse/data "
 [[ -d "mas/data" ]] && [[ "$(ls -A mas/data 2>/dev/null)" ]] && EXISTING_DATA="${EXISTING_DATA}mas/data "
+fi
 
 if [[ -n "$EXISTING_DATA" ]]; then
     echo -e "${RED}⚠ WARNING: Existing data directories found:${NC}"
@@ -206,6 +215,72 @@ fi
 echo ""
 
 # ============================================================================
+# FLUFFYCHAT SELECTION
+# ============================================================================
+echo -e "${CYAN}Enable FluffyChat (alternative Matrix web client)?${NC}"
+echo ""
+echo -e "  ${GREEN}Yes)${NC} Self-host FluffyChat alongside Element Web"
+echo -e "       → Adds a fluffychat container"
+echo -e "       → Registers FluffyChat as MAS OIDC client (fixes cross-signing reset)"
+echo ""
+echo -e "  ${GREEN}No)${NC}  Element Web only (default)"
+echo ""
+read -p "Enable FluffyChat? [y/N]: " INCLUDE_FLUFFYCHAT
+
+if [[ "$INCLUDE_FLUFFYCHAT" =~ ^[Yy]$ ]]; then
+    USE_FLUFFYCHAT=true
+    echo -e "${GREEN}✓${NC} FluffyChat will be enabled"
+else
+    USE_FLUFFYCHAT=false
+    echo -e "${GREEN}✓${NC} FluffyChat disabled"
+fi
+echo ""
+
+# ============================================================================
+# MONITORING SELECTION
+# ============================================================================
+echo -e "${CYAN}Enable Prometheus + Grafana monitoring?${NC}"
+echo ""
+echo -e "  ${GREEN}Yes)${NC} Adds Prometheus (metrics scraper) + Grafana (dashboard)"
+echo -e "       → Synapse metrics endpoint enabled automatically"
+echo -e "       → Import Synapse dashboard ID 10046 from grafana.com"
+echo ""
+echo -e "  ${GREEN}No)${NC}  No monitoring stack (default)"
+echo ""
+read -p "Enable monitoring? [y/N]: " INCLUDE_MONITORING
+
+if [[ "$INCLUDE_MONITORING" =~ ^[Yy]$ ]]; then
+    USE_MONITORING=true
+    echo -e "${GREEN}✓${NC} Prometheus + Grafana will be enabled"
+else
+    USE_MONITORING=false
+    echo -e "${GREEN}✓${NC} Monitoring disabled"
+fi
+echo ""
+
+# ============================================================================
+# HOOKSHOT SELECTION
+# ============================================================================
+echo -e "${CYAN}Enable matrix-hookshot (GitHub/GitLab/webhook integrations)?${NC}"
+echo ""
+echo -e "  ${GREEN}Yes)${NC} Connects Matrix rooms to GitHub, GitLab, JIRA, RSS, and generic webhooks"
+echo -e "       → Registered as an appservice in Synapse"
+echo -e "       → Generates hookshot/config.yaml (add GitHub/GitLab tokens manually)"
+echo ""
+echo -e "  ${GREEN}No)${NC}  No hookshot (default)"
+echo ""
+read -p "Enable hookshot? [y/N]: " INCLUDE_HOOKSHOT
+
+if [[ "$INCLUDE_HOOKSHOT" =~ ^[Yy]$ ]]; then
+    USE_HOOKSHOT=true
+    echo -e "${GREEN}✓${NC} Hookshot will be enabled"
+else
+    USE_HOOKSHOT=false
+    echo -e "${GREEN}✓${NC} Hookshot disabled"
+fi
+echo ""
+
+# ============================================================================
 # OPEN REGISTRATION
 # ============================================================================
 if [[ "$USE_AUTHELIA" == true || "$USE_CUSTOM_OIDC" == true ]]; then
@@ -271,11 +346,17 @@ build_image() {
 POSTGRES_IMAGE=$(build_image "postgres:16-alpine")
 SYNAPSE_IMAGE=$(build_image "matrixdotorg/synapse:latest")
 ELEMENT_IMAGE=$(build_image "vectorim/element-web:latest")
-ELEMENT_ADMIN_IMAGE=$(build_image "oci.element.io/element-admin:latest")
+FLUFFYCHAT_IMAGE=$(build_image "ghcr.io/krille-chan/fluffychat:latest")
+KETESA_IMAGE=$(build_image "etkecc/ketesa:latest")
 MAS_IMAGE=$(build_image "ghcr.io/element-hq/matrix-authentication-service:latest")
 TELEGRAM_IMAGE=$(build_image "dock.mau.dev/mautrix/telegram:latest")
 WHATSAPP_IMAGE=$(build_image "dock.mau.dev/mautrix/whatsapp:latest")
 SIGNAL_IMAGE=$(build_image "dock.mau.dev/mautrix/signal:latest")
+DISCORD_IMAGE=$(build_image "dock.mau.dev/mautrix/discord:latest")
+SLACK_IMAGE=$(build_image "dock.mau.dev/mautrix/slack:latest")
+HOOKSHOT_IMAGE=$(build_image "ghcr.io/matrix-org/matrix-hookshot:latest")
+PROMETHEUS_IMAGE=$(build_image "prom/prometheus:latest")
+GRAFANA_IMAGE=$(build_image "grafana/grafana:latest")
 LIVEKIT_IMAGE=$(build_image "livekit/livekit-server:latest")
 LK_JWT_IMAGE=$(build_image "ghcr.io/element-hq/lk-jwt-service:latest")
 ELEMENT_CALL_IMAGE=$(build_image "ghcr.io/element-hq/element-call:latest")
@@ -330,6 +411,9 @@ if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
     ADMIN_DOMAIN="admin.example.test"
     AUTH_DOMAIN="auth.example.test"
     AUTHELIA_DOMAIN="authelia.example.test"
+    FLUFFYCHAT_DOMAIN="chat.example.test"
+    MONITORING_DOMAIN="monitoring.example.test"
+    HOOKSHOT_DOMAIN="hooks.example.test"
     RTC_DOMAIN="rtc.example.test"
     CALL_DOMAIN="call.example.test"
 
@@ -390,10 +474,31 @@ else
     ELEMENT_SUBDOMAIN=${ELEMENT_SUBDOMAIN:-element}
     ELEMENT_DOMAIN="${ELEMENT_SUBDOMAIN}.${DOMAIN_BASE}"
 
-    # Element Admin subdomain
-    read -p "Enter Element Admin subdomain [default: admin]: " ADMIN_SUBDOMAIN
+    # Ketesa subdomain
+    read -p "Enter Ketesa (admin panel) subdomain [default: admin]: " ADMIN_SUBDOMAIN
     ADMIN_SUBDOMAIN=${ADMIN_SUBDOMAIN:-admin}
     ADMIN_DOMAIN="${ADMIN_SUBDOMAIN}.${DOMAIN_BASE}"
+
+    # FluffyChat subdomain
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        read -p "Enter FluffyChat subdomain [default: chat]: " FLUFFYCHAT_SUBDOMAIN
+        FLUFFYCHAT_SUBDOMAIN=${FLUFFYCHAT_SUBDOMAIN:-chat}
+        FLUFFYCHAT_DOMAIN="${FLUFFYCHAT_SUBDOMAIN}.${DOMAIN_BASE}"
+    fi
+
+    # Monitoring subdomain
+    if [[ "$USE_MONITORING" == true ]]; then
+        read -p "Enter Grafana subdomain [default: monitoring]: " MONITORING_SUBDOMAIN
+        MONITORING_SUBDOMAIN=${MONITORING_SUBDOMAIN:-monitoring}
+        MONITORING_DOMAIN="${MONITORING_SUBDOMAIN}.${DOMAIN_BASE}"
+    fi
+
+    # Hookshot subdomain
+    if [[ "$USE_HOOKSHOT" == true ]]; then
+        read -p "Enter hookshot webhook subdomain [default: hooks]: " HOOKSHOT_SUBDOMAIN
+        HOOKSHOT_SUBDOMAIN=${HOOKSHOT_SUBDOMAIN:-hooks}
+        HOOKSHOT_DOMAIN="${HOOKSHOT_SUBDOMAIN}.${DOMAIN_BASE}"
+    fi
 
     # MAS subdomain
     read -p "Enter MAS/Auth subdomain [default: auth]: " AUTH_SUBDOMAIN
@@ -469,13 +574,16 @@ else
     echo ""
 fi
 
+# Ensure FLUFFYCHAT_DOMAIN is always set (needed for MAS client entry even when service is disabled)
+FLUFFYCHAT_DOMAIN="${FLUFFYCHAT_DOMAIN:-chat.${DOMAIN_BASE}}"
+
 # Step 1: Check prerequisites
 echo -e "${BLUE}[1/13] Checking prerequisites...${NC}"
 if ! command -v openssl &> /dev/null; then
     print_error "openssl is not installed"
     exit 1
 fi
-if ! $DOCKER_CMD --version &> /dev/null; then
+if [[ "${SKIP_START:-false}" != "true" ]] && ! $DOCKER_CMD --version &> /dev/null; then
     print_error "Docker is not accessible"
     exit 1
 fi
@@ -490,8 +598,11 @@ mkdir -p element/config
 mkdir -p synapse/data
 mkdir -p postgres/data
 mkdir -p caddy/data caddy/config
-mkdir -p bridges/{telegram,whatsapp,signal}/config
+mkdir -p bridges/{telegram,whatsapp,signal,discord,slack}/config
 mkdir -p appservices
+mkdir -p prometheus/rules
+mkdir -p grafana/provisioning/{datasources,dashboards,dashboards/json}
+mkdir -p hookshot
 print_status "Directory structure created"
 echo ""
 
@@ -529,7 +640,13 @@ ELEMENT_DOMAIN=${ELEMENT_DOMAIN}
 ADMIN_DOMAIN=${ADMIN_DOMAIN}
 AUTH_DOMAIN=${AUTH_DOMAIN}
 AUTHELIA_DOMAIN=${AUTHELIA_DOMAIN}
+FLUFFYCHAT_DOMAIN=${FLUFFYCHAT_DOMAIN:-}
+MONITORING_DOMAIN=${MONITORING_DOMAIN:-}
+HOOKSHOT_DOMAIN=${HOOKSHOT_DOMAIN:-}
 SERVER_NAME=${SERVER_NAME}
+USE_FLUFFYCHAT=${USE_FLUFFYCHAT}
+USE_MONITORING=${USE_MONITORING}
+USE_HOOKSHOT=${USE_HOOKSHOT}
 
 # PostgreSQL
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -555,12 +672,18 @@ TZ=${TZ:-Europe/Berlin}
 POSTGRES_IMAGE=${POSTGRES_IMAGE}
 SYNAPSE_IMAGE=${SYNAPSE_IMAGE}
 ELEMENT_IMAGE=${ELEMENT_IMAGE}
-ELEMENT_ADMIN_IMAGE=${ELEMENT_ADMIN_IMAGE}
+FLUFFYCHAT_IMAGE=${FLUFFYCHAT_IMAGE}
+KETESA_IMAGE=${KETESA_IMAGE}
 REDIS_IMAGE=${REDIS_IMAGE}
 MAS_IMAGE=${MAS_IMAGE}
 TELEGRAM_IMAGE=${TELEGRAM_IMAGE}
 WHATSAPP_IMAGE=${WHATSAPP_IMAGE}
 SIGNAL_IMAGE=${SIGNAL_IMAGE}
+DISCORD_IMAGE=${DISCORD_IMAGE}
+SLACK_IMAGE=${SLACK_IMAGE}
+HOOKSHOT_IMAGE=${HOOKSHOT_IMAGE}
+PROMETHEUS_IMAGE=${PROMETHEUS_IMAGE}
+GRAFANA_IMAGE=${GRAFANA_IMAGE}
 LIVEKIT_IMAGE=${LIVEKIT_IMAGE}
 LK_JWT_IMAGE=${LK_JWT_IMAGE}
 ELEMENT_CALL_IMAGE=${ELEMENT_CALL_IMAGE}
@@ -974,12 +1097,13 @@ clients:
       - 'http://localhost'
       - 'http://127.0.0.1'
 
-  # Element Admin (public - for admin UI)
-  - client_id: '01ADMN00000000000000000000'
+  # FluffyChat (public client — web + native apps)
+  - client_id: '01FFCHAT00000000000000FC00'
     client_auth_method: none
     redirect_uris:
-      - 'https://${ADMIN_DOMAIN}/'
-      - 'https://${ADMIN_DOMAIN}'
+      - 'https://${FLUFFYCHAT_DOMAIN}'
+      - 'https://${FLUFFYCHAT_DOMAIN}/'
+      - 'im.fluffychat://login'
 
   # Synapse client (confidential - for backend integration)
   - client_id: '0000000000000000000SYNAPSE'
@@ -1047,6 +1171,194 @@ EOF
 print_status "Element Web configuration created"
 echo ""
 
+# Step 11.1: Create FluffyChat config (if enabled)
+if [[ "$USE_FLUFFYCHAT" == true ]]; then
+    echo -e "${BLUE}[11.1/13] Creating FluffyChat configuration...${NC}"
+    mkdir -p fluffychat
+    cat > fluffychat/config.json << EOF
+{
+    "default_homeserver": "${SERVER_NAME}",
+    "homeserver_list": [
+        {
+            "name": "${SERVER_NAME}",
+            "server_url": "https://${MATRIX_DOMAIN}",
+            "isDefault": true
+        }
+    ]
+}
+EOF
+    print_status "FluffyChat configuration created"
+    echo ""
+fi
+
+# Step 11.2: Create Prometheus + Grafana config (if monitoring enabled)
+if [[ "$USE_MONITORING" == true ]]; then
+    echo -e "${BLUE}[11.2/13] Creating Prometheus + Grafana configuration...${NC}"
+
+    cat > prometheus/prometheus.yml << EOF
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: synapse
+    static_configs:
+      - targets: ['synapse:9000']
+EOF
+
+    # Download Synapse recording rules (required for the official Grafana dashboard)
+    if curl -sf --max-time 10 \
+        "https://raw.githubusercontent.com/element-hq/synapse/develop/contrib/grafana/synapse.rules.yml" \
+        -o prometheus/rules/synapse.rules.yml 2>/dev/null; then
+        print_status "Synapse recording rules downloaded"
+    else
+        print_warning "Could not download Synapse recording rules — some Grafana panels may be empty"
+        print_info "  Download manually from: https://github.com/element-hq/synapse/blob/develop/contrib/grafana/synapse.rules.yml"
+    fi
+
+    cat > grafana/provisioning/datasources/prometheus.yaml << EOF
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+EOF
+
+    cat > grafana/provisioning/dashboards/dashboard.yaml << EOF
+apiVersion: 1
+providers:
+  - name: Synapse
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
+EOF
+
+    # Download official Synapse Grafana dashboard (ID 10046)
+    if curl -sf --max-time 15 \
+        "https://grafana.com/api/dashboards/10046/revisions/latest/download" \
+        -o grafana/provisioning/dashboards/json/synapse.json 2>/dev/null; then
+        print_status "Synapse Grafana dashboard downloaded (ID 10046)"
+    else
+        print_warning "Could not download Synapse Grafana dashboard"
+        print_info "  Import manually in Grafana: Dashboards → Import → ID 10046"
+    fi
+
+    print_status "Prometheus + Grafana configuration created"
+    echo ""
+fi
+
+# Step 11.3: Create hookshot config (if hookshot enabled)
+if [[ "$USE_HOOKSHOT" == true ]]; then
+    echo -e "${BLUE}[11.3/13] Creating hookshot configuration...${NC}"
+
+    HOOKSHOT_AS_TOKEN=$(generate_hex_secret)
+    HOOKSHOT_HS_TOKEN=$(generate_hex_secret)
+
+    cat > hookshot/config.yaml << EOF
+# matrix-hookshot configuration
+# Full docs: https://matrix-org.github.io/matrix-hookshot/
+#
+# After starting, use the Hookshot bot in a Matrix room:
+#   !hookshot setup webhook <name>   (generic webhook)
+#   !hookshot github project ...     (GitHub — add OAuth app credentials below first)
+
+bridge:
+  domain: ${SERVER_NAME}
+  url: http://synapse:8008
+  mediaUrl: https://${MATRIX_DOMAIN}
+  port: 9993
+  bindAddress: 0.0.0.0
+
+logging:
+  level: info
+  colorize: true
+  json: false
+  timestampFormat: HH:mm:ss:SSS
+
+permissions:
+  - actor: "${SERVER_NAME}"
+    services:
+      - service: "*"
+        level: admin
+
+generic:
+  enabled: true
+  urlPrefix: https://${HOOKSHOT_DOMAIN}/
+  userIdPrefix: _webhooks_
+  allowJsTransformationFunctions: false
+  waitForComplete: false
+  showHttpBody: false
+
+metrics:
+  enabled: true
+
+listeners:
+  - port: 9000
+    bindAddress: 0.0.0.0
+    resources:
+      - webhooks
+      - metrics
+
+# ── Optional integrations ──────────────────────────────────────────────────
+# Uncomment and fill in to enable GitHub/GitLab/JIRA/RSS integrations.
+
+# github:
+#   auth:
+#     id: YOUR_GITHUB_APP_ID
+#     privateKeyFile: /data/github-key.pem
+#   webhook:
+#     secret: GENERATE_A_RANDOM_SECRET
+#   oauth:
+#     client_id: YOUR_GITHUB_OAUTH_CLIENT_ID
+#     client_secret: YOUR_GITHUB_OAUTH_CLIENT_SECRET
+#     redirect_uri: https://${HOOKSHOT_DOMAIN}/oauth
+
+# gitlab:
+#   instances:
+#     gitlab.com:
+#       url: https://gitlab.com
+
+# feeds:
+#   enabled: true
+#   pollIntervalSeconds: 600
+
+# jira:
+#   webhook:
+#     secret: GENERATE_A_RANDOM_SECRET
+EOF
+    chmod 644 hookshot/config.yaml
+
+    cat > hookshot/registration.yaml << EOF
+id: hookshot
+url: http://hookshot:9993
+as_token: ${HOOKSHOT_AS_TOKEN}
+hs_token: ${HOOKSHOT_HS_TOKEN}
+sender_localpart: hookshot
+rate_limited: false
+de.sorunome.msc2409.push_ephemeral: true
+push_ephemeral: true
+namespaces:
+  users:
+    - regex: "@_webhooks_.*:${SERVER_NAME}"
+      exclusive: true
+  aliases: []
+  rooms: []
+EOF
+    cp hookshot/registration.yaml appservices/hookshot.yaml
+    print_status "Hookshot configuration created (hookshot/config.yaml)"
+    print_info "  Add GitHub/GitLab tokens to hookshot/config.yaml before using those integrations"
+    echo ""
+fi
+
 # Step 11.5: Create LiveKit config (if Element Call enabled)
 if [[ "$USE_ELEMENT_CALL" == true ]]; then
     echo -e "${BLUE}[11.5/13] Creating LiveKit configuration...${NC}"
@@ -1074,14 +1386,33 @@ echo -e "${BLUE}[12/13] Generating Synapse configuration...${NC}"
 
 # Generate homeserver.yaml if it doesn't exist
 if [ ! -f "synapse/data/homeserver.yaml" ]; then
-    print_info "Generating new homeserver.yaml..."
-    $DOCKER_CMD run --rm \
-        -v $(pwd)/synapse/data:/data \
-        -e SYNAPSE_SERVER_NAME=${SERVER_NAME} \
-        -e SYNAPSE_REPORT_STATS=no \
-        matrixdotorg/synapse:latest generate
-    # Fix ownership: synapse runs as uid 991 inside Docker; reclaim files for current user
-    sudo chown -R "$(id -u):$(id -g)" synapse/data/
+    if [[ "${SKIP_START:-false}" == "true" ]]; then
+        print_info "Generating minimal homeserver.yaml (config-only mode)..."
+        cat > synapse/data/homeserver.yaml << EOF
+server_name: "${SERVER_NAME}"
+pid_file: /data/homeserver.pid
+listeners:
+  - port: 8008
+    tls: false
+    type: http
+    x_forwarded: true
+    resources:
+      - names: [client, federation]
+        compress: false
+log_config: "/data/${SERVER_NAME}.log.config"
+media_store_path: /data/media_store
+report_stats: false
+EOF
+    else
+        print_info "Generating new homeserver.yaml..."
+        $DOCKER_CMD run --rm \
+            -v $(pwd)/synapse/data:/data \
+            -e SYNAPSE_SERVER_NAME=${SERVER_NAME} \
+            -e SYNAPSE_REPORT_STATS=no \
+            matrixdotorg/synapse:latest generate
+        # Fix ownership: synapse runs as uid 991 inside Docker; reclaim files for current user
+        sudo chown -R "$(id -u):$(id -g)" synapse/data/
+    fi
     print_status "Synapse configuration generated"
 else
     print_info "Existing homeserver.yaml found - preserving custom configurations"
@@ -1186,17 +1517,42 @@ namespaces:
       exclusive: false
 EOF
 
+# Build the appservice file list (always doublepuppet + hookshot if enabled)
+APPSERVICE_FILES="  - /appservices/doublepuppet.yaml"
+if [[ "$USE_HOOKSHOT" == true ]]; then
+    APPSERVICE_FILES="${APPSERVICE_FILES}
+  - /appservices/hookshot.yaml"
+fi
+
 cat >> synapse/data/homeserver.yaml << EOF
 
-# Double-puppeting appservice
+# Double-puppeting + optional appservices
 app_service_config_files:
-  - /appservices/doublepuppet.yaml
+${APPSERVICE_FILES}
 EOF
 
-# Restore ownership to Synapse uid so the container can read/write its own data
-sudo chown -R 991:991 synapse/data/
-sudo chmod 640 synapse/data/*.signing.key 2>/dev/null || true
-sudo chown -R 65532:65532 mas/data/
+# Add Prometheus metrics listener (written as a separate config file, loaded alongside
+# homeserver.yaml when SYNAPSE_CONFIG_PATH points to the /data directory)
+if [[ "$USE_MONITORING" == true ]]; then
+    cat > synapse/data/metrics.yaml << EOF
+# Synapse Prometheus metrics — loaded alongside homeserver.yaml
+enable_metrics: true
+
+listeners:
+  - type: metrics
+    port: 9000
+    bind_addresses: ['0.0.0.0']
+    resources: []
+EOF
+    print_status "Synapse metrics listener configured (synapse/data/metrics.yaml)"
+fi
+
+# Restore ownership to container UIDs so containers can read/write their data
+if [[ "${SKIP_START:-false}" != "true" ]]; then
+    sudo chown -R 991:991 synapse/data/
+    sudo chmod 640 synapse/data/*.signing.key 2>/dev/null || true
+    sudo chown -R 65532:65532 mas/data/
+fi
 print_status "Database configuration updated with current credentials"
 echo ""
 
@@ -1349,7 +1705,7 @@ ${MATRIX_DOMAIN}:443 {
         }
     }
 
-    # Synapse admin API — CORS for Element Admin
+    # Synapse admin API — CORS for Ketesa
     handle /_synapse/admin* {
         header Access-Control-Allow-Origin "https://${ADMIN_DOMAIN}"
         header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
@@ -1505,16 +1861,33 @@ ${ELEMENT_DOMAIN}:443 {
 }
 
 # =========================
-# Element Admin
+# Ketesa
 # =========================
 ${ADMIN_DOMAIN}:443 {
     tls internal
 
     handle {
-        reverse_proxy element-admin:8080
+        reverse_proxy ketesa:8080
     }
 }
 EOF
+
+    # Append FluffyChat block if enabled
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        cat >> caddy/Caddyfile << EOF
+
+# =========================
+# FluffyChat
+# =========================
+${FLUFFYCHAT_DOMAIN}:443 {
+    tls internal
+
+    handle {
+        reverse_proxy fluffychat:80
+    }
+}
+EOF
+    fi
 
     # Append identity domain well-known block if SERVER_NAME differs from MATRIX_DOMAIN
     if [[ "$SERVER_NAME" != "$MATRIX_DOMAIN" ]]; then
@@ -1537,6 +1910,40 @@ ${SERVER_NAME}:443 {
     handle @wk_server {
         header Content-Type application/json
         respond \`{"m.server":"${MATRIX_DOMAIN}:443"}\` 200
+    }
+}
+EOF
+    fi
+
+    # Append monitoring block if enabled
+    if [[ "$USE_MONITORING" == true ]]; then
+        cat >> caddy/Caddyfile << EOF
+
+# =========================
+# Grafana (Monitoring)
+# =========================
+${MONITORING_DOMAIN}:443 {
+    tls internal
+
+    handle {
+        reverse_proxy grafana:3000
+    }
+}
+EOF
+    fi
+
+    # Append hookshot block if enabled
+    if [[ "$USE_HOOKSHOT" == true ]]; then
+        cat >> caddy/Caddyfile << EOF
+
+# =========================
+# Hookshot (Webhooks)
+# =========================
+${HOOKSHOT_DOMAIN}:443 {
+    tls internal
+
+    handle {
+        reverse_proxy hookshot:9000
     }
 }
 EOF
@@ -1649,7 +2056,7 @@ ${MATRIX_DOMAIN} {
         }
     }
 
-    # Synapse admin API — CORS for Element Admin
+    # Synapse admin API — CORS for Ketesa
     handle /_synapse/admin* {
         header Access-Control-Allow-Origin "https://${ADMIN_DOMAIN}"
         header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
@@ -1736,14 +2143,59 @@ ${ELEMENT_DOMAIN} {
 }
 
 # =========================
-# Element Admin
+# Ketesa
 # =========================
 ${ADMIN_DOMAIN} {
     handle {
-        reverse_proxy element-admin:8080
+        reverse_proxy ketesa:8080
     }
 }
 EOF
+
+    # Append FluffyChat block if enabled
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        cat >> caddy/Caddyfile << EOF
+
+# =========================
+# FluffyChat
+# =========================
+${FLUFFYCHAT_DOMAIN} {
+    handle {
+        reverse_proxy fluffychat:80
+    }
+}
+EOF
+    fi
+
+    # Append monitoring block if enabled
+    if [[ "$USE_MONITORING" == true ]]; then
+        cat >> caddy/Caddyfile << EOF
+
+# =========================
+# Grafana (Monitoring)
+# =========================
+${MONITORING_DOMAIN} {
+    handle {
+        reverse_proxy grafana:3000
+    }
+}
+EOF
+    fi
+
+    # Append hookshot block if enabled
+    if [[ "$USE_HOOKSHOT" == true ]]; then
+        cat >> caddy/Caddyfile << EOF
+
+# =========================
+# Hookshot (Webhooks)
+# =========================
+${HOOKSHOT_DOMAIN} {
+    handle {
+        reverse_proxy hookshot:9000
+    }
+}
+EOF
+    fi
 
     # Append identity domain well-known block if SERVER_NAME differs from MATRIX_DOMAIN
     if [[ "$SERVER_NAME" != "$MATRIX_DOMAIN" ]]; then
@@ -1818,7 +2270,20 @@ echo -e "  Postgres:      $POSTGRES_IMAGE"
 echo -e "  Redis:         $REDIS_IMAGE"
 echo -e "  MAS:           $MAS_IMAGE"
 echo -e "  Element:       $ELEMENT_IMAGE"
-echo -e "  Element Admin: $ELEMENT_ADMIN_IMAGE"
+if [[ "$USE_FLUFFYCHAT" == true ]]; then
+    echo -e "  FluffyChat:    $FLUFFYCHAT_IMAGE"
+fi
+echo -e "  Ketesa:        $KETESA_IMAGE"
+echo -e "  Discord Bridge: $DISCORD_IMAGE"
+echo -e "  Slack Bridge:   $SLACK_IMAGE"
+if [[ "$USE_MONITORING" == true ]]; then
+    echo -e "  Prometheus:    $PROMETHEUS_IMAGE"
+    echo -e "  Grafana:       $GRAFANA_IMAGE"
+fi
+if [[ "$USE_HOOKSHOT" == true ]]; then
+    echo -e "  Hookshot:      $HOOKSHOT_IMAGE"
+fi
+echo -e "  Auto-Compressor: (built locally)"
 echo -e "  Authelia:      $AUTHELIA_IMAGE"
 echo -e "  Caddy:         $CADDY_IMAGE"
 if [[ "$USE_ELEMENT_CALL" == true ]]; then
@@ -1880,14 +2345,23 @@ fi
 if [[ "$USE_ELEMENT_CALL" == true ]]; then
     COMPOSE_PROFILES="${COMPOSE_PROFILES} --profile element-call"
 fi
+if [[ "$USE_FLUFFYCHAT" == true ]]; then
+    COMPOSE_PROFILES="${COMPOSE_PROFILES} --profile fluffychat"
+fi
+if [[ "$USE_MONITORING" == true ]]; then
+    COMPOSE_PROFILES="${COMPOSE_PROFILES} --profile monitoring"
+fi
+if [[ "$USE_HOOKSHOT" == true ]]; then
+    COMPOSE_PROFILES="${COMPOSE_PROFILES} --profile hookshot"
+fi
 
-# Start remaining services
+# Start remaining services (--remove-orphans cleans up containers from renamed/removed services)
 if [[ -n "$COMPOSE_PROFILES" ]]; then
     print_info "Starting all services (profiles:${COMPOSE_PROFILES})..."
-    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} ${COMPOSE_PROFILES} up -d
+    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} ${COMPOSE_PROFILES} up -d --remove-orphans
 else
     print_info "Starting all services..."
-    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} up -d
+    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} up -d --remove-orphans
 fi
 echo ""
 
@@ -2047,7 +2521,7 @@ ${MATRIX_DOMAIN} {
         }
     }
 
-    # Synapse admin API — CORS for Element Admin
+    # Synapse admin API — CORS for Ketesa
     handle /_synapse/admin* {
         header Access-Control-Allow-Origin "https://${ADMIN_DOMAIN}"
         header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
@@ -2133,15 +2607,60 @@ ${ELEMENT_DOMAIN} {
 }
 
 # =========================
-# Element Admin
+# Ketesa
 # =========================
 ${ADMIN_DOMAIN} {
-    # Proxy to Element Admin
+    # Proxy to Ketesa
     handle {
         reverse_proxy ${MATRIX_SERVER_IP}:8091
     }
 }
 EOF
+
+    # Append FluffyChat block if enabled
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        cat >> caddy/Caddyfile.production << EOF
+
+# =========================
+# FluffyChat
+# =========================
+${FLUFFYCHAT_DOMAIN} {
+    handle {
+        reverse_proxy ${MATRIX_SERVER_IP}:8092
+    }
+}
+EOF
+    fi
+
+    # Append monitoring block if enabled
+    if [[ "$USE_MONITORING" == true ]]; then
+        cat >> caddy/Caddyfile.production << EOF
+
+# =========================
+# Grafana (Monitoring)
+# =========================
+${MONITORING_DOMAIN} {
+    handle {
+        reverse_proxy ${MATRIX_SERVER_IP}:3000
+    }
+}
+EOF
+    fi
+
+    # Append hookshot block if enabled
+    if [[ "$USE_HOOKSHOT" == true ]]; then
+        cat >> caddy/Caddyfile.production << EOF
+
+# =========================
+# Hookshot (Webhooks)
+# =========================
+${HOOKSHOT_DOMAIN} {
+    handle {
+        reverse_proxy ${MATRIX_SERVER_IP}:9000
+    }
+}
+EOF
+    fi
 
     # Append identity domain well-known block if SERVER_NAME differs from MATRIX_DOMAIN
     if [[ "$SERVER_NAME" != "$MATRIX_DOMAIN" ]]; then
@@ -2212,9 +2731,11 @@ echo -e "${BLUE}═════════════════════�
 echo ""
 
 # Show service status
-echo -e "${BLUE}Service Status:${NC}"
-$DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} ps
-echo ""
+if [[ "${SKIP_START:-false}" != "true" ]]; then
+    echo -e "${BLUE}Service Status:${NC}"
+    $DOCKER_COMPOSE_CMD -f ${COMPOSE_FILE} ps
+    echo ""
+fi
 
 echo -e "${GREEN}✓ Matrix stack is now running!${NC}"
 echo ""
@@ -2222,10 +2743,20 @@ echo ""
 if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
     echo -e "${BLUE}Access Points (HTTPS with self-signed certificates):${NC}"
     echo -e "  • Element Web:  https://${ELEMENT_DOMAIN}"
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        echo -e "  • FluffyChat:   https://${FLUFFYCHAT_DOMAIN}"
+    fi
     echo -e "  • Matrix API:   https://${MATRIX_DOMAIN}"
     echo -e "  • MAS (Auth):   https://${AUTH_DOMAIN}"
+    echo -e "  • Ketesa Admin: https://${ADMIN_DOMAIN}"
     if [[ "$USE_AUTHELIA" == true ]]; then
         echo -e "  • Authelia:     https://${AUTHELIA_DOMAIN}"
+    fi
+    if [[ "$USE_MONITORING" == true ]]; then
+        echo -e "  • Grafana:      https://${MONITORING_DOMAIN}"
+    fi
+    if [[ "$USE_HOOKSHOT" == true ]]; then
+        echo -e "  • Hookshot:     https://${HOOKSHOT_DOMAIN}"
     fi
     if [[ "$USE_ELEMENT_CALL" == true ]]; then
         echo -e "  • Element Call: https://${CALL_DOMAIN}"
@@ -2268,6 +2799,9 @@ if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
 elif [[ "$DEPLOYMENT_MODE" == "production-single" ]]; then
     echo -e "${BLUE}Access Points (once DNS is live):${NC}"
     echo -e "  • Element Web:  https://${ELEMENT_DOMAIN}"
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        echo -e "  • FluffyChat:   https://${FLUFFYCHAT_DOMAIN}"
+    fi
     echo -e "  • Matrix API:   https://${MATRIX_DOMAIN}"
     echo -e "  • MAS (Auth):   https://${AUTH_DOMAIN}"
     if [[ "$USE_ELEMENT_CALL" == true ]]; then
@@ -2279,6 +2813,9 @@ elif [[ "$DEPLOYMENT_MODE" == "production-single" ]]; then
     echo -e "  • ${ELEMENT_DOMAIN}"
     echo -e "  • ${ADMIN_DOMAIN}"
     echo -e "  • ${AUTH_DOMAIN}"
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        echo -e "  • ${FLUFFYCHAT_DOMAIN}"
+    fi
     if [[ "$USE_ELEMENT_CALL" == true ]]; then
         echo -e "  • ${RTC_DOMAIN}"
         echo -e "  • ${CALL_DOMAIN}"
@@ -2346,6 +2883,9 @@ else
     echo ""
     echo -e "${BLUE}Access URLs (after DNS and Caddy setup):${NC}"
     echo -e "  • Element Web:  https://${ELEMENT_DOMAIN}"
+    if [[ "$USE_FLUFFYCHAT" == true ]]; then
+        echo -e "  • FluffyChat:   https://${FLUFFYCHAT_DOMAIN}"
+    fi
     echo -e "  • Matrix API:   https://${MATRIX_DOMAIN}"
     echo -e "  • MAS (Auth):   https://${AUTH_DOMAIN}"
     echo -e "  • Authelia:     https://${AUTHELIA_DOMAIN}"

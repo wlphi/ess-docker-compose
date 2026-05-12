@@ -15,8 +15,10 @@
 # Usage:
 #   ./test_deploy.sh                       # full suite (config + endpoints)
 #   SKIP_INTEGRATION=true ./test_deploy.sh # config-file checks only (no endpoint tests)
+#   SKIP_DOCKER=true ./test_deploy.sh      # config-generation checks only (no Docker required)
 #
-# Requires: docker, docker compose v2, bash ≥ 4, openssl, curl
+# Requires: bash ≥ 4, openssl, curl, python3
+# Requires (unless SKIP_DOCKER=true): docker, docker compose v2
 # =============================================================================
 
 set -euo pipefail
@@ -28,6 +30,7 @@ BOLD='\033[1m'; NC='\033[0m'
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 SKIP_INTEGRATION="${SKIP_INTEGRATION:-false}"
+SKIP_DOCKER="${SKIP_DOCKER:-false}"
 COMPOSE_FILE="compose-variants/docker-compose.local.yml"
 COMPOSE_CMD="sudo docker compose --project-directory ."
 
@@ -65,13 +68,17 @@ check_prereqs() {
             || { fail "$cmd not found"; ok=false; }
     done
 
-    sudo docker ps &>/dev/null \
-        && pass "Docker daemon reachable" \
-        || { fail "Docker not accessible (sudo docker ps failed)"; ok=false; }
+    if [[ "$SKIP_DOCKER" == "true" ]]; then
+        warn "SKIP_DOCKER=true — skipping Docker checks; live scenarios will run config-only"
+    else
+        sudo docker ps &>/dev/null \
+            && pass "Docker daemon reachable" \
+            || { fail "Docker not accessible (sudo docker ps failed)"; ok=false; }
 
-    sudo docker compose version &>/dev/null \
-        && pass "docker compose v2 available" \
-        || { fail "docker compose not available"; ok=false; }
+        sudo docker compose version &>/dev/null \
+            && pass "docker compose v2 available" \
+            || { fail "docker compose not available"; ok=false; }
+    fi
 
     [[ -f deploy.sh ]] \
         || { fail "deploy.sh not found — run from repo root"; ok=false; }
@@ -82,11 +89,17 @@ check_prereqs() {
 # ─── Stop stack and wipe all data volumes ─────────────────────────────────────
 teardown_stack() {
     info "Stopping Docker stack and removing volumes..."
-    $COMPOSE_CMD -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
+    if sudo docker ps &>/dev/null 2>&1; then
+        $COMPOSE_CMD -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
+    fi
     sudo rm -rf postgres/data mas/data mas/certs caddy/data caddy/config 2>/dev/null || true
-    # Wipe synapse/data fully so no leftover signing keys or log configs
-    # confuse the next scenario's `docker run ... generate` step
-    sudo rm -rf synapse/data 2>/dev/null || true
+    # Wipe synapse/data fully so no leftover signing keys or log configs confuse the
+    # next scenario's `docker run ... generate` step.
+    # rm -rf may fail if files are owned by Docker uid 991; mv always works because
+    # only write permission on the parent directory (synapse/) is needed.
+    rm -rf synapse/data 2>/dev/null || \
+        sudo rm -rf synapse/data 2>/dev/null || \
+        { mv synapse/data "synapse/data.old.$$" 2>/dev/null || true; }
     mkdir -p synapse/data
 }
 
@@ -97,12 +110,19 @@ cleanup_configs() {
     rm -f caddy/Caddyfile caddy/Caddyfile.production
     sudo rm -rf livekit 2>/dev/null || true
     mkdir -p livekit
-    rm -f appservices/doublepuppet.yaml
+    rm -f appservices/doublepuppet.yaml appservices/hookshot.yaml
+    rm -f prometheus/prometheus.yml prometheus/rules/synapse.rules.yml
+    rm -f grafana/provisioning/datasources/prometheus.yaml
+    rm -f grafana/provisioning/dashboards/dashboard.yaml
+    rm -f grafana/provisioning/dashboards/json/synapse.json
+    rm -f hookshot/config.yaml hookshot/registration.yaml
     # These may be root-owned from docker run or previous deploys
     sudo rm -f mas/config/config.yaml 2>/dev/null || true
     sudo rm -f element/config/config.json 2>/dev/null || true
+    sudo rm -f fluffychat/config.json 2>/dev/null || true
     sudo rm -f authelia/config/configuration.yml authelia/config/users_database.yml 2>/dev/null || true
     sudo rm -f synapse/data/homeserver.yaml synapse/data/homeserver.yaml.bak 2>/dev/null || true
+    sudo rm -f synapse/data/metrics.yaml 2>/dev/null || true
 }
 
 # ─── Assertions ───────────────────────────────────────────────────────────────
@@ -166,6 +186,11 @@ assert_not_world_readable() {
 
 assert_owned_by() {
     local path="$1" uid="$2" desc="$3"
+    # Ownership is only set correctly when Docker runs (chown to container UIDs happens
+    # in deploy.sh post-start); skip the check when running without Docker.
+    if ! sudo docker ps &>/dev/null 2>&1; then
+        warn "Docker not available — skipping ownership check for $desc"; return
+    fi
     local actual; actual=$(stat -c '%u' "$path" 2>/dev/null)
     [[ "$actual" == "$uid" ]] \
         && pass "$desc owned by uid ${uid}" \
@@ -217,6 +242,7 @@ assert_valid_caddyfile() {
 assert_configs() {
     local server_name="$1"
     local open_reg="${2:-false}"   # "true" when open registration was chosen
+    local skip_start="${3:-false}" # "true" when deploy ran with SKIP_START=true (no chown)
     local matrix_domain="matrix.example.test"
 
     header "Config assertions  (SERVER_NAME=${server_name})"
@@ -230,8 +256,12 @@ assert_configs() {
     # Permissions — container UIDs must be able to read/write their data (regression: issue #21)
     assert_world_executable "mas/config"             "mas/config/ dir"
     assert_world_readable   "mas/config/config.yaml" "mas/config/config.yaml"
-    assert_owned_by         "mas/data"     "65532"   "mas/data/"
-    assert_owned_by         "synapse/data" "991"     "synapse/data/"
+    if [[ "$skip_start" != "true" ]]; then
+        assert_owned_by "mas/data"     "65532"   "mas/data/"
+        assert_owned_by "synapse/data" "991"     "synapse/data/"
+    else
+        warn "Skipping ownership checks (SKIP_START mode — chown not run)"
+    fi
 
     # MAS config
     assert_file "mas/config/config.yaml" "mas/config/config.yaml generated"
@@ -351,7 +381,7 @@ assert_configs() {
         "/_synapse/admin"                                   "Caddyfile → synapse admin route present"
     assert_contains "caddy/Caddyfile" \
         'Access-Control-Allow-Origin "https://admin.example.test"' \
-                                                            "Caddyfile → synapse admin CORS header for Element Admin"
+                                                            "Caddyfile → synapse admin CORS header for Ketesa"
     assert_not_contains "caddy/Caddyfile" \
         'respond "Forbidden" 403'                           "Caddyfile → admin API not blocked with 403"
     assert_contains "caddy/Caddyfile" \
@@ -362,6 +392,10 @@ assert_configs() {
         '"m.authentication"'                                "Caddyfile → well-known includes m.authentication"
     assert_contains "caddy/Caddyfile" \
         "\"issuer\":\"https://${auth_domain}/\""            "Caddyfile → well-known m.authentication.issuer correct"
+
+    # ── MAS FluffyChat client (always registered — native app users benefit even without self-hosting) ─
+    assert_contains "mas/config/config.yaml" \
+        "im.fluffychat://login"                             "MAS → FluffyChat native redirect URI registered"
 
     # ── Syntax/parse validation ──────────────────────────────────────────────
     assert_valid_yaml  "mas/config/config.yaml"
@@ -458,6 +492,11 @@ assert_endpoints() {
     header "Endpoint tests  (SERVER_NAME=${server_name})"
     info "Allowing 20s for full service initialization..."
     sleep 20
+
+    # Dump MAS logs upfront so crash reasons are visible in test output
+    info "=== MAS logs (last 30 lines) ==="
+    $COMPOSE_CMD -f "$COMPOSE_FILE" logs mas --tail=30 2>/dev/null || true
+    info "=== end MAS logs ==="
 
     setup_mas_ca
 
@@ -559,23 +598,25 @@ assert_endpoints() {
         || fail "Element Web root (no Element content in response)"
 
     # Registration endpoint — must be proxied to MAS (not left to Synapse which always 403s)
-    # With policy closed: MAS returns 403 M_FORBIDDEN
-    # With policy open:   MAS returns 401 with interactive-auth flows (not 403)
+    # MAS delegates registration to its OIDC flow and 404s the legacy CS API /register endpoint.
+    # Both open and closed return 404; open registration is validated via config assertions instead.
     local reg_code; reg_code=$(curl_local_post_status "$matrix_domain" "/_matrix/client/v3/register" '{"kind":"user"}')
     if [[ "$open_reg" == "true" ]]; then
         [[ "$reg_code" != "403" ]] \
-            && pass "/_matrix/client/v3/register open → MAS returns non-403 (flows available, got ${reg_code})" \
-            || fail "/_matrix/client/v3/register should not be 403 when open (got 403 — policy not applied or wrong proxy)"
+            && pass "/_matrix/client/v3/register open → MAS handles it (non-403, got ${reg_code})" \
+            || fail "/_matrix/client/v3/register should not be 403 when open (got 403 — wrong proxy or Synapse handling this)"
     else
-        [[ "$reg_code" == "403" ]] \
-            && pass "/_matrix/client/v3/register closed → MAS returns 403" \
-            || fail "/_matrix/client/v3/register should be 403 when closed (got HTTP ${reg_code})"
+        # MAS returns 403 or 404 for legacy /register when registration is closed
+        [[ "$reg_code" == "403" || "$reg_code" == "404" ]] \
+            && pass "/_matrix/client/v3/register closed → rejected (got ${reg_code})" \
+            || fail "/_matrix/client/v3/register should be 403/404 when closed (got HTTP ${reg_code})"
     fi
 }
 
 # ─── Quickstart config assertions ────────────────────────────────────────────
 assert_quickstart_configs() {
     local domain="$1"
+    local skip_start="${2:-false}" # "true" when quickstart ran with SKIP_START=true
     local matrix_domain="matrix.${domain}"
     local auth_domain="auth.${domain}"
 
@@ -589,8 +630,12 @@ assert_quickstart_configs() {
     # Permissions — container UIDs must be able to read/write their data (regression: issue #21)
     assert_world_executable "mas/config"             "mas/config/ dir"
     assert_world_readable   "mas/config/config.yaml" "mas/config/config.yaml"
-    assert_owned_by         "mas/data"     "65532"   "mas/data/"
-    assert_owned_by         "synapse/data" "991"     "synapse/data/"
+    if [[ "$skip_start" != "true" ]]; then
+        assert_owned_by "mas/data"     "65532"   "mas/data/"
+        assert_owned_by "synapse/data" "991"     "synapse/data/"
+    else
+        warn "Skipping ownership checks (SKIP_START mode — chown not run)"
+    fi
 
     assert_file "mas/config/config.yaml"      "mas/config/config.yaml generated"
     assert_contains "mas/config/config.yaml"  "homeserver: '${matrix_domain}'"       "MAS → homeserver"
@@ -617,12 +662,31 @@ assert_quickstart_configs() {
     assert_contains     "caddy/Caddyfile" "admin localhost:2019"       "Caddyfile → admin API localhost only"
     assert_contains     "caddy/Caddyfile" "/_synapse/admin"            "Caddyfile → synapse admin route present"
     assert_contains     "caddy/Caddyfile" "Access-Control-Allow-Origin \"https://admin.${domain}\"" \
-                                                                       "Caddyfile → synapse admin CORS header for Element Admin"
+                                                                       "Caddyfile → synapse admin CORS header for Ketesa"
     assert_not_contains "caddy/Caddyfile" 'respond "Forbidden" 403'   "Caddyfile → admin API not blocked with 403"
     assert_contains     "caddy/Caddyfile" "header_up X-Forwarded-Host" "Caddyfile → MAS proxy forwards X-Forwarded-Host"
     assert_contains     "caddy/Caddyfile" "handle /account/"           "Caddyfile → /account/ uses handle (preserves prefix)"
     assert_not_contains "caddy/Caddyfile" "handle_path /account/"      "Caddyfile → /account/ not handle_path"
     assert_contains     "caddy/Caddyfile" "/_matrix/client/v3/register" "Caddyfile → register proxied to MAS"
+
+    # FluffyChat config (quickstart always generates it)
+    assert_file "fluffychat/config.json"          "fluffychat/config.json generated"
+    assert_valid_json  "fluffychat/config.json"
+    assert_contains "fluffychat/config.json"      "matrix.${domain}"         "FluffyChat config → homeserver domain"
+    assert_contains "caddy/Caddyfile"             "reverse_proxy fluffychat:80" "Caddyfile → FluffyChat reverse_proxy"
+    assert_contains "mas/config/config.yaml"      "im.fluffychat://login"    "MAS → FluffyChat native redirect URI registered"
+
+    # Monitoring (quickstart always enables it)
+    assert_file "prometheus/prometheus.yml"       "prometheus/prometheus.yml generated"
+    assert_contains "prometheus/prometheus.yml"   "synapse:9000"             "Prometheus → scrapes Synapse metrics endpoint"
+    assert_file "grafana/provisioning/datasources/prometheus.yaml" "Grafana datasource provisioning generated"
+    assert_file "grafana/provisioning/dashboards/dashboard.yaml"   "Grafana dashboard provisioning generated"
+    assert_contains "caddy/Caddyfile"             "reverse_proxy grafana:3000" "Caddyfile → Grafana reverse_proxy"
+    assert_file "synapse/data/metrics.yaml"       "synapse/data/metrics.yaml generated"
+    assert_contains "synapse/data/metrics.yaml"   "enable_metrics: true"     "Synapse metrics.yaml → enable_metrics"
+    assert_contains "synapse/data/metrics.yaml"   "type: metrics"            "Synapse metrics.yaml → metrics listener"
+    assert_valid_yaml "prometheus/prometheus.yml"
+    assert_valid_yaml "synapse/data/metrics.yaml"
 
     # Syntax/parse validation
     assert_valid_yaml  "mas/config/config.yaml"
@@ -652,12 +716,24 @@ run_scenario() {
     #   [1] Deployment type:                1  (local)
     #   [2] SSO provider choice:            (empty → 1=None)
     #   [3] Enable Element Call?            n
-    #   [4] Allow open registration?        $reg_choice
-    #   [5] Custom Docker registry prefix:  (empty → default)
-    #   [6] Use hardened images?            n
-    #   [7] SERVER_NAME choice:             $sn_choice  (1=TLD, 2=subdomain)
-    #   [8] Press Enter to continue:        (empty)
-    printf '%s\n' "1" "" "n" "$reg_choice" "" "n" "$sn_choice" "" \
+    #   [4] Enable FluffyChat?              n
+    #   [5] Enable monitoring?              n
+    #   [6] Enable hookshot?                n
+    #   [7] Allow open registration?        $reg_choice
+    #   [8] Custom Docker registry prefix:  (empty → default)
+    #   [9] Use hardened images?            n
+    #  [10] SERVER_NAME choice:             $sn_choice  (1=TLD, 2=subdomain)
+    #  [11] Press Enter to continue:        (empty)
+    if ! sudo docker ps &>/dev/null 2>&1; then
+        warn "Docker not available — running config-only for: $name"
+        printf '%s\n' "1" "" "n" "n" "n" "n" "$reg_choice" "" "n" "$sn_choice" "" \
+            | SKIP_START=true bash deploy.sh
+        assert_configs "$expected_sn" "$open_reg" "true"
+        warn "Skipping endpoint tests (Docker not available)"
+        return
+    fi
+
+    printf '%s\n' "1" "" "n" "n" "n" "n" "$reg_choice" "" "n" "$sn_choice" "" \
         | bash deploy.sh
 
     assert_configs "$expected_sn" "$open_reg"
@@ -701,12 +777,14 @@ check_prereqs
 
 # ─── Static file sanity checks (no Docker needed) ────────────────────────────
 section "Static · docker-compose.yml integrity"
-# Issue #19: element-admin must use SERVER_NAME (not MATRIX_DOMAIN) so MXIDs resolve
-# correctly in TLD mode where SERVER_NAME != MATRIX_DOMAIN.
-assert_contains "docker-compose.yml" \
-    'SERVER_NAME: "${SERVER_NAME}"'  "docker-compose.yml → element-admin uses SERVER_NAME not MATRIX_DOMAIN"
-assert_not_contains "docker-compose.yml" \
-    'SERVER_NAME: "${MATRIX_DOMAIN}"' "docker-compose.yml → element-admin does not use MATRIX_DOMAIN"
+assert_contains "docker-compose.yml" 'ketesa'            "docker-compose.yml → ketesa service present"
+assert_contains "docker-compose.yml" 'fluffychat'        "docker-compose.yml → fluffychat service present"
+assert_contains "docker-compose.yml" 'mautrix-discord'   "docker-compose.yml → discord bridge present"
+assert_contains "docker-compose.yml" 'mautrix-slack'     "docker-compose.yml → slack bridge present"
+assert_contains "docker-compose.yml" 'hookshot'          "docker-compose.yml → hookshot service present"
+assert_contains "docker-compose.yml" 'prometheus'        "docker-compose.yml → prometheus service present"
+assert_contains "docker-compose.yml" 'grafana'           "docker-compose.yml → grafana service present"
+assert_contains "docker-compose.yml" 'synapse-auto-compressor' "docker-compose.yml → auto-compressor service present"
 
 # Scenario A — TLD identity:       @user:example.test
 run_scenario \
@@ -729,20 +807,23 @@ info "Running deploy.sh production mode (piped stdin, SKIP_START=true)"
 #   [1] Deployment type:               3  (production distributed)
 #   [2] SSO provider choice:           (empty → 1=None)
 #   [3] Enable Element Call?           n
-#   [4] Allow open registration?       n  (default: closed)
-#   [5] Custom Docker registry prefix: (empty)
-#   [6] Use hardened images?           n
-#   [7] Base domain:                   example.com
-#   [8] Matrix subdomain:              (empty → matrix)
-#   [9] Element subdomain:             (empty → element)
-#  [10] Admin subdomain:               (empty → admin)
-#  [11] Auth subdomain:                (empty → auth)
-#  [12] Authelia subdomain:            (empty → authelia)
-#  [13] SERVER_NAME choice:            1  (TLD: @user:example.com)
-#  [14] Matrix server address:         (empty → 10.0.1.10)
-#  [15] Authelia server address:       (empty → 10.0.1.20)
-#  [16] Let's Encrypt email:           (empty → admin@example.com)
-printf '%s\n' "3" "" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" "" "" \
+#   [4] Enable FluffyChat?             n
+#   [5] Enable monitoring?             n
+#   [6] Enable hookshot?               n
+#   [7] Allow open registration?       n  (default: closed)
+#   [8] Custom Docker registry prefix: (empty)
+#   [9] Use hardened images?           n
+#  [10] Base domain:                   example.com
+#  [11] Matrix subdomain:              (empty → matrix)
+#  [12] Element subdomain:             (empty → element)
+#  [13] Admin subdomain:               (empty → admin)
+#  [14] Auth subdomain:                (empty → auth)   ← no FluffyChat/monitoring/hookshot subdomains since disabled
+#  [15] Authelia subdomain:            (empty → authelia)
+#  [16] SERVER_NAME choice:            1  (TLD: @user:example.com)
+#  [17] Matrix server address:         (empty → 10.0.1.10)
+#  [18] Authelia server address:       (empty → 10.0.1.20)
+#  [19] Let's Encrypt email:           (empty → admin@example.com)
+printf '%s\n' "3" "" "n" "n" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" "" "" \
     | SKIP_START=true bash deploy.sh
 
 header "Production Caddyfile assertions"
@@ -750,7 +831,7 @@ assert_file "caddy/Caddyfile.production"                              "caddy/Cad
 assert_contains     "caddy/Caddyfile.production" "admin localhost:2019"        "Caddyfile.production → admin API localhost only"
 assert_contains     "caddy/Caddyfile.production" "/_synapse/admin"             "Caddyfile.production → synapse admin route present"
 assert_contains     "caddy/Caddyfile.production" 'Access-Control-Allow-Origin "https://admin.example.com"' \
-                                                                              "Caddyfile.production → synapse admin CORS header for Element Admin"
+                                                                              "Caddyfile.production → synapse admin CORS header for Ketesa"
 assert_not_contains "caddy/Caddyfile.production" 'respond "Forbidden" 403'   "Caddyfile.production → admin API not blocked with 403"
 assert_contains     "caddy/Caddyfile.production" "header_up X-Forwarded-Host"  "Caddyfile.production → MAS proxy forwards X-Forwarded-Host"
 assert_contains     "caddy/Caddyfile.production" "handle /account/"            "Caddyfile.production → /account/ uses handle (preserves prefix)"
@@ -772,7 +853,7 @@ info "Running quickstart.sh (piped stdin, SKIP_START=true)"
 #   [4] Allow open registration?   n  (default: closed)
 printf '%s\n' "example.test" "test@example.test" "n" "n" \
     | SKIP_START=true bash quickstart.sh
-assert_quickstart_configs "example.test"
+assert_quickstart_configs "example.test" "true"
 if [[ "$SKIP_INTEGRATION" != "true" ]]; then
     warn "Quickstart endpoint tests skipped (stack not started in SKIP_START mode)"
 fi
@@ -805,14 +886,17 @@ info "Running deploy.sh with open registration=y (piped stdin, SKIP_START=true)"
 #   [1] Deployment type:                1  (local)
 #   [2] SSO provider choice:            (empty → 1=None)
 #   [3] Enable Element Call?            n
-#   [4] Allow open registration?        y  ← testing the enabled path
-#   [5] Custom Docker registry prefix:  (empty)
-#   [6] Use hardened images?            n
-#   [7] SERVER_NAME choice:             1  (TLD)
-#   [8] Press Enter to continue:        (empty)
-printf '%s\n' "1" "" "n" "y" "" "n" "1" "" \
+#   [4] Enable FluffyChat?              n
+#   [5] Enable monitoring?              n
+#   [6] Enable hookshot?                n
+#   [7] Allow open registration?        y  ← testing the enabled path
+#   [8] Custom Docker registry prefix:  (empty)
+#   [9] Use hardened images?            n
+#  [10] SERVER_NAME choice:             1  (TLD)
+#  [11] Press Enter to continue:        (empty)
+printf '%s\n' "1" "" "n" "n" "n" "n" "y" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
-assert_configs "example.test" "true"
+assert_configs "example.test" "true" "true"
 
 # Scenario E — Element Call enabled (config only, validates livekit.yaml + no participant_limit)
 section "E · Element Call enabled  (config only)"
@@ -823,12 +907,15 @@ info "Running deploy.sh with Element Call=y (piped stdin, SKIP_START=true)"
 #   [1] Deployment type:                1  (local)
 #   [2] SSO provider choice:            (empty → 1=None)
 #   [3] Enable Element Call?            y  ← testing Element Call path
-#   [4] Allow open registration?        n
-#   [5] Custom Docker registry prefix:  (empty)
-#   [6] Use hardened images?            n
-#   [7] SERVER_NAME choice:             1  (TLD)
-#   [8] Press Enter to continue:        (empty)
-printf '%s\n' "1" "" "y" "n" "" "n" "1" "" \
+#   [4] Enable FluffyChat?              n
+#   [5] Enable monitoring?              n
+#   [6] Enable hookshot?                n
+#   [7] Allow open registration?        n
+#   [8] Custom Docker registry prefix:  (empty)
+#   [9] Use hardened images?            n
+#  [10] SERVER_NAME choice:             1  (TLD)
+#  [11] Press Enter to continue:        (empty)
+printf '%s\n' "1" "" "y" "n" "n" "n" "n" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
 header "Element Call config assertions"
 assert_file "livekit/livekit.yaml"                                        "livekit/livekit.yaml generated"
@@ -855,18 +942,21 @@ info "Running deploy.sh production single-server mode (piped stdin, SKIP_START=t
 #   [1] Deployment type:               2  (production single-server)
 #   [2] SSO provider choice:           (empty → 1=None)
 #   [3] Enable Element Call?           n
-#   [4] Allow open registration?       n
-#   [5] Custom Docker registry prefix: (empty)
-#   [6] Use hardened images?           n
-#   [7] Base domain:                   example.com
-#   [8] Matrix subdomain:              (empty → matrix)
-#   [9] Element subdomain:             (empty → element)
-#  [10] Admin subdomain:               (empty → admin)
-#  [11] Auth subdomain:                (empty → auth)
-#  [12] Authelia subdomain:            (empty → authelia)
-#  [13] SERVER_NAME choice:            1  (TLD: @user:example.com)
-#  [14] Let's Encrypt email:           (empty → admin@example.com)  ← no server IP prompts
-printf '%s\n' "2" "" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" \
+#   [4] Enable FluffyChat?             n
+#   [5] Enable monitoring?             n
+#   [6] Enable hookshot?               n
+#   [7] Allow open registration?       n
+#   [8] Custom Docker registry prefix: (empty)
+#   [9] Use hardened images?           n
+#  [10] Base domain:                   example.com
+#  [11] Matrix subdomain:              (empty → matrix)
+#  [12] Element subdomain:             (empty → element)
+#  [13] Admin subdomain:               (empty → admin)
+#  [14] Auth subdomain:                (empty → auth)   ← no FluffyChat/monitoring/hookshot subdomains since disabled
+#  [15] Authelia subdomain:            (empty → authelia)
+#  [16] SERVER_NAME choice:            1  (TLD: @user:example.com)
+#  [17] Let's Encrypt email:           (empty → admin@example.com)  ← no server IP prompts
+printf '%s\n' "2" "" "n" "n" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" \
     | SKIP_START=true bash deploy.sh
 
 header "Production single-server Caddyfile assertions"
@@ -877,7 +967,7 @@ assert_contains "caddy/Caddyfile" "admin localhost:2019"                   "Cadd
 assert_contains "caddy/Caddyfile" "matrix.example.com {"                   "Caddyfile → matrix domain block (no :443)"
 assert_contains "caddy/Caddyfile" "/_synapse/admin"                        "Caddyfile → synapse admin route present"
 assert_contains "caddy/Caddyfile" 'Access-Control-Allow-Origin "https://admin.example.com"' \
-                                                                           "Caddyfile → synapse admin CORS header for Element Admin"
+                                                                           "Caddyfile → synapse admin CORS header for Ketesa"
 assert_not_contains "caddy/Caddyfile" 'respond "Forbidden" 403'           "Caddyfile → admin API not blocked with 403"
 assert_contains "caddy/Caddyfile" "header_up X-Forwarded-Host"             "Caddyfile → MAS proxy forwards X-Forwarded-Host"
 assert_contains "caddy/Caddyfile" '"m.authentication"'                     "Caddyfile → well-known includes m.authentication"
@@ -896,11 +986,14 @@ info "Running deploy.sh with custom OIDC=3 (piped stdin, SKIP_START=true)"
 #   [4] OIDC client ID:                 test-client-id
 #   [5] OIDC client secret:             test-client-secret
 #   [6] Enable Element Call?            n
-#   [7] Custom Docker registry prefix:  (empty)
-#   [8] Use hardened images?            n
-#   [9] SERVER_NAME choice:             1  (TLD)
-#  [10] Press Enter to continue:        (empty)
-printf '%s\n' "1" "3" "https://auth.example.test/app/o/matrix/" "test-client-id" "test-client-secret" "n" "" "n" "1" "" \
+#   [7] Enable FluffyChat?              n
+#   [8] Enable monitoring?              n
+#   [9] Enable hookshot?                n
+#  [10] Custom Docker registry prefix:  (empty)
+#  [11] Use hardened images?            n
+#  [12] SERVER_NAME choice:             1  (TLD)
+#  [13] Press Enter to continue:        (empty)
+printf '%s\n' "1" "3" "https://auth.example.test/app/o/matrix/" "test-client-id" "test-client-secret" "n" "n" "n" "n" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
 header "Custom OIDC config assertions"
 assert_file "mas/config/config.yaml"                              "mas/config/config.yaml generated"
@@ -933,11 +1026,14 @@ info "Running deploy.sh with Authelia SSO (piped stdin, SKIP_START=true)"
 #   [1] Deployment type:               1  (local)
 #   [2] SSO provider choice:           2  (Authelia)
 #   [3] Enable Element Call?           n
-#   [4] Custom Docker registry prefix: (empty)
-#   [5] Use hardened images?           n
-#   [6] SERVER_NAME choice:            1  (TLD: @user:example.test)
-#   [7] Press Enter to continue:       (empty)
-printf '%s\n' "1" "2" "n" "" "n" "1" "" \
+#   [4] Enable FluffyChat?             n
+#   [5] Enable monitoring?             n
+#   [6] Enable hookshot?               n
+#   [7] Custom Docker registry prefix: (empty)
+#   [8] Use hardened images?           n
+#   [9] SERVER_NAME choice:            1  (TLD: @user:example.test)
+#  [10] Press Enter to continue:       (empty)
+printf '%s\n' "1" "2" "n" "n" "n" "n" "" "n" "1" "" \
     | SKIP_START=true bash deploy.sh
 header "Authelia config assertions"
 assert_file "authelia/config/configuration.yml"   "authelia/config/configuration.yml generated"
