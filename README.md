@@ -2,6 +2,11 @@
 
 A self-hosted Matrix server stack with modern OIDC authentication, web clients, optional video calling, messaging bridges, and observability.
 
+> **Run NixOS?** See [**nixmatrix**](https://github.com/wlphi/nixmatrix) — the same
+> stack as a single declarative NixOS flake (deploy to a fresh VPS with
+> `nixos-anywhere`). This Docker Compose project is the right choice for running on
+> an existing Docker host; nixmatrix is the right choice if you prefer NixOS.
+
 ## What's Included
 
 ### Core (always on)
