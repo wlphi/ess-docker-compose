@@ -199,10 +199,12 @@ services:
     environment:
       RUST_LOG: info
     command:
-      - --db-url
+      - -p
       - postgresql://synapse:${POSTGRES_PASSWORD}@postgres/synapse
-      - --chunk-size
+      - -c
       - "500"
+      - -n
+      - "100"
     networks:
       - matrix-network
     depends_on:
