@@ -933,6 +933,56 @@ run_scenario \
     "example.test" \
     "y"
 
+# Scenario M — monitoring enabled with live stack (regression: metrics.yaml must not
+# clobber the port-8008 listener in homeserver.yaml when Synapse merges both YAMLs)
+section "M · Monitoring enabled  (port-8008 listener collision check)"
+teardown_stack
+cleanup_configs
+info "Running deploy.sh with monitoring=y (piped stdin)"
+# Stdin answers in prompt order:
+#   [1] Deployment type:                1  (local)
+#   [2] SSO provider choice:            (empty → 1=None)
+#   [3] Enable Element Call?            n
+#   [4] Enable FluffyChat?              n
+#   [5] Enable monitoring?              y  ← generates metrics.yaml alongside homeserver.yaml
+#   [6] Enable hookshot?                n
+#   [7] Allow open registration?        n
+#   [8] Custom Docker registry prefix:  (empty)
+#   [9] Use hardened images?            n
+#  [10] SERVER_NAME choice:             1  (TLD)
+#  [11] Press Enter to continue:        (empty)
+if ! sudo docker ps &>/dev/null 2>&1; then
+    warn "Docker not available — skipping Scenario M (requires live stack)"
+else
+    printf '%s\n' "1" "" "n" "n" "y" "n" "n" "" "n" "1" "" \
+        | bash deploy.sh
+
+    assert_file "synapse/data/metrics.yaml" "synapse/data/metrics.yaml present alongside homeserver.yaml"
+
+    if [[ "$SKIP_INTEGRATION" == "true" ]]; then
+        warn "Skipping port-8008 live check (SKIP_INTEGRATION=true)"
+    else
+        info "Allowing 30s for Synapse to start with metrics.yaml present..."
+        sleep 30
+
+        # Hit port 8008 directly inside the container — this is what the metrics.yaml
+        # listeners-key collision kills. Going through Caddy (443) would mask the failure
+        # because Caddy health-checks its upstreams lazily.
+        _m_health=$(sudo docker exec matrix-synapse \
+            curl -sf --max-time 10 http://localhost:8008/health 2>/dev/null || echo "FAILED")
+        [[ "$_m_health" == "OK" ]] \
+            && pass "Synapse port 8008 reachable with metrics.yaml present (no listener collision)" \
+            || fail "Synapse port 8008 unreachable — metrics.yaml listeners key clobbered homeserver.yaml listener (got: '${_m_health}')"
+
+        # Also confirm the metrics listener on port 9000 is up
+        _m_metrics=$(sudo docker exec matrix-synapse \
+            curl -sf --max-time 10 -o /dev/null -w "%{http_code}" http://localhost:9000/metrics 2>/dev/null || echo "000")
+        [[ "$_m_metrics" == "200" ]] \
+            && pass "Synapse metrics port 9000 responds (HTTP ${_m_metrics})" \
+            || fail "Synapse metrics port 9000 not responding (HTTP ${_m_metrics})"
+    fi
+fi
+
 # Scenario PS — production single-server (config only)
 section "PS · Production single-server  (config only)"
 teardown_stack
