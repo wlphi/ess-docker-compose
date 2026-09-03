@@ -18,6 +18,18 @@ gen_hex()    { openssl rand -hex 32; }
 
 [[ "${SKIP_START:-false}" != "true" ]] && { sudo docker ps &>/dev/null || fail "Cannot reach Docker. Is it running?"; }
 
+if [[ "${SKIP_START:-false}" != "true" ]] && command -v curl &>/dev/null; then
+    info "Checking container registry connectivity..."
+    # An HTTP response (even 401 — anonymous /v2/ probes are unauthorized by
+    # design) means the registry is reachable. Only "000" (curl couldn't
+    # complete the request at all: DNS/TCP/TLS/timeout failure) means it isn't.
+    _registry_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://registry-1.docker.io/v2/ 2>/dev/null); _registry_code="${_registry_code:-000}"
+    _ghcr_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://ghcr.io/v2/ 2>/dev/null); _ghcr_code="${_ghcr_code:-000}"
+    if [[ "$_registry_code" == "000" ]] && [[ "$_ghcr_code" == "000" ]]; then
+        fail "Cannot reach Docker Hub or GitHub Container Registry — check your network, firewall, or proxy settings (e.g. /etc/environment and the Docker daemon's proxy config) before re-running."
+    fi
+fi
+
 echo ""
 echo "Matrix Stack — Quick Start"
 echo "=========================="
@@ -398,6 +410,10 @@ EOF
             -e SYNAPSE_REPORT_STATS=no \
             matrixdotorg/synapse:latest generate 2>/dev/null
         sudo chown -R "$(id -u):$(id -g)" synapse/data/
+        # Synapse's generated config binds the client/federation listener to
+        # loopback only, which is unreachable from other containers (Caddy,
+        # MAS) on the Docker network. Rebind to all interfaces.
+        sed -i "s/bind_addresses: \['::1', '127.0.0.1'\]/bind_addresses: ['0.0.0.0']/" synapse/data/homeserver.yaml
         ok "Synapse config generated"
     fi
 fi
@@ -455,20 +471,27 @@ fi
 
 ok "Synapse config patched"
 
-# Write Prometheus metrics listener as a separate config file (loaded alongside
-# homeserver.yaml via SYNAPSE_CONFIG_PATH=/data directory mode)
+# Enable Prometheus metrics: enable_metrics lives in its own file (loaded
+# alongside homeserver.yaml via SYNAPSE_CONFIG_PATH=/data), but the metrics
+# *listener* must be merged into homeserver.yaml's own `listeners:` list.
+# Synapse's multi-file config merge replaces top-level keys wholesale rather
+# than merging lists, so a second top-level `listeners:` key in metrics.yaml
+# would silently clobber the client/federation listener from homeserver.yaml
+# and take down port 8008 (issue #32).
 info "Enabling Synapse Prometheus metrics..."
+sed -i '/# ess-deploy:metrics-listener/,/^  - \|^[^ ]/{ /# ess-deploy:metrics-listener/d; /^  - \|^[^ ]/!d }' synapse/data/homeserver.yaml
+sed -i '/^        compress: false/a\
+\
+  - type: metrics   # ess-deploy:metrics-listener\
+    port: 9000\
+    bind_addresses: ['"'"'0.0.0.0'"'"']\
+    resources: []' synapse/data/homeserver.yaml
+
 cat > synapse/data/metrics.yaml << EOF
 # Synapse Prometheus metrics — loaded alongside homeserver.yaml
 enable_metrics: true
-
-listeners:
-  - type: metrics
-    port: 9000
-    bind_addresses: ['0.0.0.0']
-    resources: []
 EOF
-ok "Synapse metrics config written"
+ok "Synapse metrics config written (listener merged into homeserver.yaml)"
 
 # Fix ownership: Synapse runs as uid 991 inside Docker
 if [[ "${SKIP_START:-false}" != "true" ]]; then

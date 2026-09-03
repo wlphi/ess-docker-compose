@@ -684,7 +684,9 @@ assert_quickstart_configs() {
     assert_contains "caddy/Caddyfile"             "reverse_proxy grafana:3000" "Caddyfile → Grafana reverse_proxy"
     assert_file "synapse/data/metrics.yaml"       "synapse/data/metrics.yaml generated"
     assert_contains "synapse/data/metrics.yaml"   "enable_metrics: true"     "Synapse metrics.yaml → enable_metrics"
-    assert_contains "synapse/data/metrics.yaml"   "type: metrics"            "Synapse metrics.yaml → metrics listener"
+    assert_not_contains "synapse/data/metrics.yaml" "listeners:"             "Synapse metrics.yaml → no competing listeners key (would clobber homeserver.yaml's)"
+    assert_contains "synapse/data/homeserver.yaml" "type: metrics"           "Synapse homeserver.yaml → metrics listener merged in"
+    assert_contains "synapse/data/homeserver.yaml" "port: 8008"              "Synapse homeserver.yaml → client listener still present"
     assert_valid_yaml "prometheus/prometheus.yml"
     assert_valid_yaml "synapse/data/metrics.yaml"
 
