@@ -1026,6 +1026,25 @@ assert_contains "caddy/Caddyfile" '"m.authentication"'                     "Cadd
 assert_contains "caddy/Caddyfile" "/_matrix/client/v3/register"            "Caddyfile → register proxied to MAS"
 assert_not_contains "caddy/Caddyfile.production" "Production Caddyfile"    "caddy/Caddyfile.production not generated in single-server mode"
 
+# Scenario PSA — production single-server with Authelia (config only)
+# Regression test for issue #33: the single-server Caddyfile generator had no
+# Authelia vhost at all, so Authelia was unreachable through Caddy even though
+# the container itself started fine.
+section "PSA · Production single-server + Authelia  (config only)"
+teardown_stack
+cleanup_configs
+info "Running deploy.sh production single-server + Authelia (piped stdin, SKIP_START=true)"
+# Same prompt order as Scenario PS, with SSO provider choice = 2 (Authelia).
+# Note: the open-registration prompt is skipped entirely when Authelia is
+# enabled (SSO provider controls user provisioning), so it has no answer here.
+printf '%s\n' "2" "2" "n" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" \
+    | SKIP_START=true bash deploy.sh
+
+header "Production single-server + Authelia Caddyfile assertions"
+assert_file "caddy/Caddyfile"                                              "caddy/Caddyfile generated (single-server, Authelia)"
+assert_contains "caddy/Caddyfile" "authelia.example.com {"                 "Caddyfile → Authelia domain block present"
+assert_contains "caddy/Caddyfile" "reverse_proxy authelia:9091"            "Caddyfile → Authelia proxied to authelia:9091"
+
 # Scenario S — custom OIDC provider (config only)
 section "S · Custom OIDC provider  (config only)"
 teardown_stack

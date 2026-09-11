@@ -23,8 +23,10 @@ if [[ "${SKIP_START:-false}" != "true" ]] && command -v curl &>/dev/null; then
     # An HTTP response (even 401 — anonymous /v2/ probes are unauthorized by
     # design) means the registry is reachable. Only "000" (curl couldn't
     # complete the request at all: DNS/TCP/TLS/timeout failure) means it isn't.
-    _registry_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://registry-1.docker.io/v2/ 2>/dev/null); _registry_code="${_registry_code:-000}"
-    _ghcr_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://ghcr.io/v2/ 2>/dev/null); _ghcr_code="${_ghcr_code:-000}"
+    _registry_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://registry-1.docker.io/v2/ 2>/dev/null) || _registry_code=000
+    _registry_code="${_registry_code:-000}"
+    _ghcr_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://ghcr.io/v2/ 2>/dev/null) || _ghcr_code=000
+    _ghcr_code="${_ghcr_code:-000}"
     if [[ "$_registry_code" == "000" ]] && [[ "$_ghcr_code" == "000" ]]; then
         fail "Cannot reach Docker Hub or GitHub Container Registry — check your network, firewall, or proxy settings (e.g. /etc/environment and the Docker daemon's proxy config) before re-running."
     fi

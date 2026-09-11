@@ -592,8 +592,10 @@ if [[ "${SKIP_START:-false}" != "true" ]] && command -v curl &> /dev/null; then
     # An HTTP response (even 401 — anonymous /v2/ probes are unauthorized by
     # design) means the registry is reachable. Only "000" (curl couldn't
     # complete the request at all: DNS/TCP/TLS/timeout failure) means it isn't.
-    _registry_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://registry-1.docker.io/v2/ 2>/dev/null); _registry_code="${_registry_code:-000}"
-    _ghcr_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://ghcr.io/v2/ 2>/dev/null); _ghcr_code="${_ghcr_code:-000}"
+    _registry_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://registry-1.docker.io/v2/ 2>/dev/null) || _registry_code=000
+    _registry_code="${_registry_code:-000}"
+    _ghcr_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' https://ghcr.io/v2/ 2>/dev/null) || _ghcr_code=000
+    _ghcr_code="${_ghcr_code:-000}"
     if [[ "$_registry_code" == "000" ]] && [[ "$_ghcr_code" == "000" ]]; then
         print_error "Cannot reach Docker Hub (registry-1.docker.io) or GitHub Container Registry (ghcr.io)."
         print_error "This deployment needs to pull several container images. Check your network"
@@ -2182,6 +2184,19 @@ ${ADMIN_DOMAIN} {
     }
 }
 EOF
+
+    # Append Authelia block if enabled
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        cat >> caddy/Caddyfile << EOF
+
+# =========================
+# Authelia SSO
+# =========================
+${AUTHELIA_DOMAIN} {
+    reverse_proxy authelia:9091
+}
+EOF
+    fi
 
     # Append FluffyChat block if enabled
     if [[ "$USE_FLUFFYCHAT" == true ]]; then
