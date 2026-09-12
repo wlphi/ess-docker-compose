@@ -880,6 +880,7 @@ header "Production distributed + Authelia assertions"
 assert_file "caddy/Caddyfile.production"                                    "caddy/Caddyfile.production generated"
 assert_contains "caddy/Caddyfile.production" "authelia.example.com {"       "Caddyfile.production → Authelia domain block present"
 assert_contains "caddy/Caddyfile.production" "reverse_proxy 10.0.1.20:9091" "Caddyfile.production → Authelia proxied to backend IP"
+assert_valid_caddyfile "caddy/Caddyfile.production"
 assert_file "docker-compose.caddy.yml"                                      "docker-compose.caddy.yml copied to project root"
 assert_file "docker-compose.authelia.yml"                                   "docker-compose.authelia.yml copied to project root"
 assert_contains "/tmp/deploy_output_pd.log" "Deploy Authelia on your SSO machine" \
@@ -1092,6 +1093,7 @@ header "Production single-server + Authelia Caddyfile assertions"
 assert_file "caddy/Caddyfile"                                              "caddy/Caddyfile generated (single-server, Authelia)"
 assert_contains "caddy/Caddyfile" "authelia.example.com {"                 "Caddyfile → Authelia domain block present"
 assert_contains "caddy/Caddyfile" "reverse_proxy authelia:9091"            "Caddyfile → Authelia proxied to authelia:9091"
+assert_valid_caddyfile "caddy/Caddyfile"
 # Regression test: the single-server summary never listed Authelia in its
 # Access Points or DNS bullets, or printed its admin credentials, even
 # though the Caddyfile vhost (fixed above) expects DNS to be pointed at it.
