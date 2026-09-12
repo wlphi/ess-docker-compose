@@ -2629,13 +2629,6 @@ ${AUTH_DOMAIN} {
 }
 
 # =========================
-# Authelia SSO
-# =========================
-${AUTHELIA_DOMAIN} {
-    reverse_proxy ${AUTHELIA_SERVER_IP}:9091
-}
-
-# =========================
 # Element Web
 # =========================
 ${ELEMENT_DOMAIN} {
@@ -2662,6 +2655,19 @@ ${ADMIN_DOMAIN} {
     }
 }
 EOF
+
+    # Append Authelia block if enabled
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        cat >> caddy/Caddyfile.production << EOF
+
+# =========================
+# Authelia SSO
+# =========================
+${AUTHELIA_DOMAIN} {
+    reverse_proxy ${AUTHELIA_SERVER_IP}:9091
+}
+EOF
+    fi
 
     # Append FluffyChat block if enabled
     if [[ "$USE_FLUFFYCHAT" == true ]]; then
@@ -2762,11 +2768,15 @@ EOF
     echo ""
 
     print_info "Production configs generated successfully!"
-    print_status "Authelia config: authelia/config/configuration.yml"
-    print_status "Authelia users: authelia/config/users_database.yml"
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        print_status "Authelia config: authelia/config/configuration.yml"
+        print_status "Authelia users: authelia/config/users_database.yml"
+    fi
     print_status "Caddy config: caddy/Caddyfile.production"
     print_status "Caddy compose: docker-compose.caddy.yml"
-    print_status "Authelia compose: docker-compose.authelia.yml"
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        print_status "Authelia compose: docker-compose.authelia.yml"
+    fi
     echo ""
 fi
 
@@ -2785,6 +2795,11 @@ fi
 
 echo -e "${GREEN}✓ Matrix stack is now running!${NC}"
 echo ""
+
+# Fixed provider ID used for both the Authelia and custom-OIDC upstream_oauth2
+# entries in mas/config/config.yaml — this is the callback path the provider
+# (Authelia, Authentik, Keycloak, Zitadel, ...) needs registered as its redirect URI.
+OIDC_CALLBACK_URL="https://${AUTH_DOMAIN}/upstream/callback/01HQW90Z35CMXFJWQPHC3BGZGQ"
 
 if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
     echo -e "${BLUE}Access Points (HTTPS with self-signed certificates):${NC}"
@@ -2831,6 +2846,20 @@ if [[ "$DEPLOYMENT_MODE" == "local" ]]; then
         echo -e "  6. Set up 2FA (Time-based OTP) for additional security"
         echo -e "  7. Complete registration and start chatting!"
         echo ""
+    elif [[ "$USE_CUSTOM_OIDC" == true ]]; then
+        echo -e "${YELLOW}⚠ OIDC callback URL:${NC}"
+        echo -e "  Make sure this exact redirect URI is registered on your OIDC provider"
+        echo -e "  (Authentik/Keycloak/Zitadel/etc.) for the Matrix client application:"
+        echo -e "  ${OIDC_CALLBACK_URL}"
+        echo ""
+        echo -e "${BLUE}Next Steps:${NC}"
+        echo -e "  1. Go to https://${ELEMENT_DOMAIN}"
+        echo -e "  2. Accept the self-signed certificate warning"
+        echo -e "  3. Click 'Sign In'"
+        echo -e "  4. You'll be redirected through MAS to your OIDC provider"
+        echo -e "  5. Log in with your provider's credentials"
+        echo -e "  6. Complete registration and start chatting!"
+        echo ""
     else
         echo -e "${BLUE}Next Steps:${NC}"
         echo -e "  1. Go to https://${ELEMENT_DOMAIN}"
@@ -2850,6 +2879,9 @@ elif [[ "$DEPLOYMENT_MODE" == "production-single" ]]; then
     fi
     echo -e "  • Matrix API:   https://${MATRIX_DOMAIN}"
     echo -e "  • MAS (Auth):   https://${AUTH_DOMAIN}"
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        echo -e "  • Authelia:     https://${AUTHELIA_DOMAIN}"
+    fi
     if [[ "$USE_ELEMENT_CALL" == true ]]; then
         echo -e "  • Element Call: https://${CALL_DOMAIN}"
     fi
@@ -2859,6 +2891,9 @@ elif [[ "$DEPLOYMENT_MODE" == "production-single" ]]; then
     echo -e "  • ${ELEMENT_DOMAIN}"
     echo -e "  • ${ADMIN_DOMAIN}"
     echo -e "  • ${AUTH_DOMAIN}"
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        echo -e "  • ${AUTHELIA_DOMAIN}"
+    fi
     if [[ "$USE_FLUFFYCHAT" == true ]]; then
         echo -e "  • ${FLUFFYCHAT_DOMAIN}"
     fi
@@ -2877,10 +2912,29 @@ elif [[ "$DEPLOYMENT_MODE" == "production-single" ]]; then
         echo -e "  • UDP 50100-50200 (LiveKit media)"
     fi
     echo ""
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        echo -e "${BLUE}Authelia Login Credentials:${NC}"
+        echo -e "  • Username:     admin"
+        echo -e "  • Password:     ${ADMIN_PASSWORD}"
+        echo -e "  ${RED}⚠ SAVE THIS PASSWORD - you'll need it to log in!${NC}"
+        echo ""
+    elif [[ "$USE_CUSTOM_OIDC" == true ]]; then
+        echo -e "${YELLOW}⚠ OIDC callback URL:${NC}"
+        echo -e "  Make sure this exact redirect URI is registered on your OIDC provider"
+        echo -e "  (Authentik/Keycloak/Zitadel/etc.) for the Matrix client application:"
+        echo -e "  ${OIDC_CALLBACK_URL}"
+        echo ""
+    fi
     echo -e "${BLUE}Next Steps:${NC}"
     echo -e "  1. Set DNS records above to point to this machine"
     echo -e "  2. Caddy will obtain Let's Encrypt certificates automatically on first request"
-    echo -e "  3. Go to https://${ELEMENT_DOMAIN} and create your first account"
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        echo -e "  3. Go to https://${ELEMENT_DOMAIN} and log in with the Authelia credentials above"
+    elif [[ "$USE_CUSTOM_OIDC" == true ]]; then
+        echo -e "  3. Go to https://${ELEMENT_DOMAIN} and log in through your OIDC provider"
+    else
+        echo -e "  3. Go to https://${ELEMENT_DOMAIN} and create your first account"
+    fi
     echo ""
 else
     # Production distributed mode
@@ -2891,24 +2945,39 @@ else
     echo -e "${CYAN}1. Deploy Caddy on your SSL termination machine:${NC}"
     echo -e "   Generated files:"
     echo -e "   • caddy/Caddyfile.production"
-    echo -e "   • docker-compose.caddy.yml"
-    echo -e "   • Copy these files to your Caddy machine"
+    echo -e "   • compose-variants/docker-compose.caddy.yml"
+    echo -e "   • Copy these files to your Caddy machine (as caddy/Caddyfile and docker-compose.caddy.yml)"
     echo -e "   • Run: docker compose -f docker-compose.caddy.yml up -d"
     echo ""
-    echo -e "${CYAN}2. Deploy Authelia on your SSO machine:${NC}"
-    echo -e "   Generated files:"
-    echo -e "   • authelia/config/configuration.yml"
-    echo -e "   • authelia/config/users_database.yml"
-    echo -e "   • docker-compose.authelia.yml"
-    echo -e "   • Copy these files to your Authelia machine"
-    echo -e "   • Run: docker compose -f docker-compose.authelia.yml up -d"
-    echo ""
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        echo -e "${CYAN}2. Deploy Authelia on your SSO machine:${NC}"
+        echo -e "   Generated files:"
+        echo -e "   • authelia/config/configuration.yml"
+        echo -e "   • authelia/config/users_database.yml"
+        echo -e "   • compose-variants/docker-compose.authelia.yml"
+        echo -e "   • Copy these files to your Authelia machine"
+        echo -e "   • Run: docker compose -f docker-compose.authelia.yml up -d"
+        echo ""
+    elif [[ "$USE_CUSTOM_OIDC" == true ]]; then
+        echo -e "${CYAN}2. Configure your OIDC provider:${NC}"
+        echo -e "   No extra container to deploy — MAS talks to it directly."
+        echo -e "   Register this exact redirect URI on your OIDC provider"
+        echo -e "   (Authentik/Keycloak/Zitadel/etc.) for the Matrix client application:"
+        echo -e "   ${OIDC_CALLBACK_URL}"
+        echo ""
+    else
+        echo -e "${CYAN}2. Authentication:${NC}"
+        echo -e "   No SSO provider configured — MAS handles login/registration directly."
+        echo ""
+    fi
     echo -e "${CYAN}3. Configure DNS:${NC}"
     echo -e "   Point these domains to your Caddy machine (${MATRIX_SERVER_IP}):"
     echo -e "   • ${MATRIX_DOMAIN}"
     echo -e "   • ${ELEMENT_DOMAIN}"
     echo -e "   • ${AUTH_DOMAIN}"
-    echo -e "   • ${AUTHELIA_DOMAIN}"
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        echo -e "   • ${AUTHELIA_DOMAIN}"
+    fi
     if [[ "$USE_ELEMENT_CALL" == true ]]; then
         echo -e "   • ${RTC_DOMAIN}"
         echo -e "   • ${CALL_DOMAIN}"
@@ -2916,17 +2985,21 @@ else
     echo ""
     echo -e "${CYAN}4. Configure Firewall:${NC}"
     echo -e "   Matrix server (${MATRIX_SERVER_IP}): Allow from Caddy"
-    echo -e "   Authelia server (${AUTHELIA_SERVER_IP}): Allow from Caddy and Matrix"
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        echo -e "   Authelia server (${AUTHELIA_SERVER_IP}): Allow from Caddy and Matrix"
+    fi
     echo -e "   Caddy: Allow ports 80/443 from internet"
     if [[ "$USE_ELEMENT_CALL" == true ]]; then
         echo -e "   Matrix server (${MATRIX_SERVER_IP}): Allow port 7881/TCP and 50100-50200/UDP from internet (WebRTC)"
     fi
     echo ""
-    echo -e "${BLUE}Authelia Login Credentials:${NC}"
-    echo -e "  • Username:     admin"
-    echo -e "  • Password:     ${ADMIN_PASSWORD}"
-    echo -e "  ${RED}⚠ SAVE THIS PASSWORD!${NC}"
-    echo ""
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        echo -e "${BLUE}Authelia Login Credentials:${NC}"
+        echo -e "  • Username:     admin"
+        echo -e "  • Password:     ${ADMIN_PASSWORD}"
+        echo -e "  ${RED}⚠ SAVE THIS PASSWORD!${NC}"
+        echo ""
+    fi
     echo -e "${BLUE}Access URLs (after DNS and Caddy setup):${NC}"
     echo -e "  • Element Web:  https://${ELEMENT_DOMAIN}"
     if [[ "$USE_FLUFFYCHAT" == true ]]; then
@@ -2934,7 +3007,9 @@ else
     fi
     echo -e "  • Matrix API:   https://${MATRIX_DOMAIN}"
     echo -e "  • MAS (Auth):   https://${AUTH_DOMAIN}"
-    echo -e "  • Authelia:     https://${AUTHELIA_DOMAIN}"
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        echo -e "  • Authelia:     https://${AUTHELIA_DOMAIN}"
+    fi
     if [[ "$USE_ELEMENT_CALL" == true ]]; then
         echo -e "  • Element Call: https://${CALL_DOMAIN}"
         echo -e "  • LiveKit JWT:  https://${RTC_DOMAIN}/livekit/jwt"
@@ -2968,6 +3043,9 @@ echo -e "  • MAS configured with assets resource and internal discovery"
 if [[ "$USE_AUTHELIA" == true ]]; then
     echo -e "  • Authelia upstream provider enabled with fetch_userinfo and preferred_username claim"
     echo -e "  • SSL certificate trust configured for local development"
+elif [[ "$USE_CUSTOM_OIDC" == true ]]; then
+    echo -e "  • Custom OIDC upstream provider enabled: ${OIDC_ISSUER_URL}"
+    echo -e "  • Callback URL to register on your provider: ${OIDC_CALLBACK_URL}"
 else
     echo -e "  • MAS handling password authentication directly (no upstream provider)"
 fi
@@ -2975,7 +3053,11 @@ echo ""
 echo -e "${BLUE}Troubleshooting:${NC}"
 echo -e "  • If CSS is missing: Check that MAS has 'assets' resource in config"
 echo -e "  • If login fails with empty string error: Verify fetch_userinfo: true in MAS"
-echo -e "  • If redirect URI error: Check Authelia client redirect_uris include upstream callback"
+if [[ "$USE_AUTHELIA" == true ]]; then
+    echo -e "  • If redirect URI error: Check Authelia client redirect_uris include upstream callback"
+elif [[ "$USE_CUSTOM_OIDC" == true ]]; then
+    echo -e "  • If redirect URI error: Check your OIDC provider's client has ${OIDC_CALLBACK_URL} registered"
+fi
 echo -e "  • If SSL errors: Ensure mas/certs/caddy-ca.crt exists and MAS was restarted"
 echo -e "  • For detailed troubleshooting: See BUGFIXES.md"
 echo ""

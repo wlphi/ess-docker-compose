@@ -826,10 +826,21 @@ info "Running deploy.sh production mode (piped stdin, SKIP_START=true)"
 #  [18] Authelia server address:       (empty → 10.0.1.20)
 #  [19] Let's Encrypt email:           (empty → admin@example.com)
 printf '%s\n' "3" "" "n" "n" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" "" "" \
-    | SKIP_START=true bash deploy.sh
+    | SKIP_START=true bash deploy.sh 2>&1 | tee /tmp/deploy_output_p.log
 
 header "Production Caddyfile assertions"
+# Regression test: distributed mode used to unconditionally claim Authelia
+# was generated/deployed regardless of SSO choice (blank password, files
+# that were never written). With SSO=None, none of that should appear.
+assert_not_contains "/tmp/deploy_output_p.log" "Deploy Authelia on your SSO machine" \
+                                                                        "Summary → no Authelia deploy step when SSO=None"
+assert_not_contains "/tmp/deploy_output_p.log" "Authelia config: authelia/config/configuration.yml" \
+                                                                        "Summary → no false Authelia config claim when SSO=None"
+assert_not_contains "/tmp/deploy_output_p.log" "Authelia Login Credentials" \
+                                                                        "Summary → no Authelia credentials block when SSO=None"
 assert_file "caddy/Caddyfile.production"                              "caddy/Caddyfile.production generated"
+assert_not_contains "caddy/Caddyfile.production" "authelia.example.com" \
+                                                                       "Caddyfile.production → no Authelia vhost when SSO=None"
 assert_contains     "caddy/Caddyfile.production" "admin localhost:2019"        "Caddyfile.production → admin API localhost only"
 assert_contains     "caddy/Caddyfile.production" "/_synapse/admin"             "Caddyfile.production → synapse admin route present"
 assert_contains     "caddy/Caddyfile.production" 'Access-Control-Allow-Origin "https://admin.example.com"' \
@@ -842,6 +853,33 @@ assert_contains     "caddy/Caddyfile.production" '"m.authentication"'           
 assert_contains     "caddy/Caddyfile.production" "Access-Control-Allow-Origin"    "Caddyfile.production → well-known has CORS header"
 assert_contains     "caddy/Caddyfile.production" "/_matrix/client/v3/register"    "Caddyfile.production → register proxied to MAS"
 assert_valid_caddyfile "caddy/Caddyfile.production"
+
+# Scenario PD — production distributed with Authelia (config only)
+# Regression test: the distributed-mode summary was written as if Authelia
+# were always selected, regardless of the actual SSO choice. This scenario
+# is the one case where that content should legitimately appear.
+section "PD · Production distributed + Authelia  (config only)"
+teardown_stack
+cleanup_configs
+info "Running deploy.sh production distributed + Authelia (piped stdin, SKIP_START=true)"
+# Same prompt order as Scenario P, with SSO provider choice = 2 (Authelia).
+# The open-registration prompt is skipped when Authelia is enabled, so
+# there's one fewer answer than Scenario P's list.
+printf '%s\n' "3" "2" "n" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" "" "" \
+    | SKIP_START=true bash deploy.sh 2>&1 | tee /tmp/deploy_output_pd.log
+
+header "Production distributed + Authelia assertions"
+assert_file "caddy/Caddyfile.production"                                    "caddy/Caddyfile.production generated"
+assert_contains "caddy/Caddyfile.production" "authelia.example.com {"       "Caddyfile.production → Authelia domain block present"
+assert_contains "caddy/Caddyfile.production" "reverse_proxy 10.0.1.20:9091" "Caddyfile.production → Authelia proxied to backend IP"
+assert_contains "/tmp/deploy_output_pd.log" "Deploy Authelia on your SSO machine" \
+                                                                "Summary → Authelia deploy step present"
+assert_contains "/tmp/deploy_output_pd.log" "Authelia Login Credentials" \
+                                                                "Summary → Authelia credentials block present"
+assert_matches "/tmp/deploy_output_pd.log" "Password:     [A-Za-z0-9]{20,}" \
+                                                                "Summary → Authelia password is non-empty"
+assert_contains "/tmp/deploy_output_pd.log" "Authelia:     https://authelia.example.com" \
+                                                                "Summary → Authelia listed in Access URLs"
 
 # Scenario Q — quickstart.sh config generation (registration closed, default)
 section "Q · quickstart.sh  (single-machine, config only)"
@@ -1038,12 +1076,21 @@ info "Running deploy.sh production single-server + Authelia (piped stdin, SKIP_S
 # Note: the open-registration prompt is skipped entirely when Authelia is
 # enabled (SSO provider controls user provisioning), so it has no answer here.
 printf '%s\n' "2" "2" "n" "n" "n" "n" "" "n" "example.com" "" "" "" "" "" "1" "" \
-    | SKIP_START=true bash deploy.sh
+    | SKIP_START=true bash deploy.sh 2>&1 | tee /tmp/deploy_output_psa.log
 
 header "Production single-server + Authelia Caddyfile assertions"
 assert_file "caddy/Caddyfile"                                              "caddy/Caddyfile generated (single-server, Authelia)"
 assert_contains "caddy/Caddyfile" "authelia.example.com {"                 "Caddyfile → Authelia domain block present"
 assert_contains "caddy/Caddyfile" "reverse_proxy authelia:9091"            "Caddyfile → Authelia proxied to authelia:9091"
+# Regression test: the single-server summary never listed Authelia in its
+# Access Points or DNS bullets, or printed its admin credentials, even
+# though the Caddyfile vhost (fixed above) expects DNS to be pointed at it.
+assert_contains "/tmp/deploy_output_psa.log" "Authelia:     https://authelia.example.com" \
+                                                                "Summary → Authelia listed in Access Points"
+assert_contains "/tmp/deploy_output_psa.log" "authelia.example.com" \
+                                                                "Summary → Authelia domain listed in DNS records"
+assert_contains "/tmp/deploy_output_psa.log" "Authelia Login Credentials" \
+                                                                "Summary → Authelia credentials printed"
 
 # Scenario S — custom OIDC provider (config only)
 section "S · Custom OIDC provider  (config only)"
@@ -1065,8 +1112,17 @@ info "Running deploy.sh with custom OIDC=3 (piped stdin, SKIP_START=true)"
 #  [12] SERVER_NAME choice:             1  (TLD)
 #  [13] Press Enter to continue:        (empty)
 printf '%s\n' "1" "3" "https://auth.example.test/app/o/matrix/" "test-client-id" "test-client-secret" "n" "n" "n" "n" "" "n" "1" "" \
-    | SKIP_START=true bash deploy.sh
+    | SKIP_START=true bash deploy.sh 2>&1 | tee /tmp/deploy_output_s.log
 header "Custom OIDC config assertions"
+# Regression test: the final summary used to lump custom OIDC in with plain
+# password auth (wrong Next Steps text, no callback URL, no Important Notes
+# mention) — it should now get its own correct messaging.
+assert_contains "/tmp/deploy_output_s.log" "upstream/callback/01HQW90Z35CMXFJWQPHC3BGZGQ" \
+                                                                "Summary → OIDC callback URL printed"
+assert_contains "/tmp/deploy_output_s.log" "redirected through MAS to your OIDC provider" \
+                                                                "Summary → Next Steps describe OIDC flow, not password registration"
+assert_not_contains "/tmp/deploy_output_s.log" "Register a new account with your email and password" \
+                                                                "Summary → no password-registration text when using custom OIDC"
 assert_file "mas/config/config.yaml"                              "mas/config/config.yaml generated"
 assert_contains "mas/config/config.yaml" \
     "issuer: 'https://auth.example.test/app/o/matrix/'"         "MAS → custom OIDC issuer present"
