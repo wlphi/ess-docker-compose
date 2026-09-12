@@ -745,6 +745,14 @@ default_room_version: "12"
 
 This is applied automatically by `deploy.sh` and `quickstart.sh`. If you have an existing `homeserver.yaml` generated before this fix, add the line manually and restart Synapse.
 
+### CVE-2026-45078 / CVE-2026-45076 — Synapse worker-lock DoS and pagination bug (fixed in 1.152.1)
+
+`CVE-2026-45078` (ELEMENTSEC-2026-1706): CPU starvation / denial of service under worker-lock contention. `CVE-2026-45076` (ELEMENTSEC-2025-1636): pagination could stop making progress when a page was full of rejected events. Neither needs a config change — both are image-level fixes, and this stack doesn't run Synapse workers, so the worker-lock issue has limited impact here regardless. Covered automatically by pulling a current `matrixdotorg/synapse` image.
+
+### Synapse 1.157.2 — multi-CVE security release
+
+Synapse 1.157.2 (2026-07-28) fixed 11 vulnerabilities (6 high, 3 moderate, 2 low severity) — see the [1.157.2 release notes](https://github.com/element-hq/synapse/releases/tag/v1.157.2) for the full ELEMENTSEC/GHSA list. Element HQ called this out as particularly relevant for homeservers that participate in open federation and/or have untrusted local users — this stack federates by default. No config changes needed; ensure you're running 1.157.2 or later.
+
 ### Updating images
 
 The compose file uses `latest` for all images. To apply any security update:
