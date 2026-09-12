@@ -2767,6 +2767,15 @@ EOF
     print_status "Production Caddyfile created: caddy/Caddyfile.production"
     echo ""
 
+    # Copy the standalone compose files to the project root so the "copy
+    # these files to your X machine" instructions below point at files that
+    # actually exist there, instead of making the user go find them under
+    # compose-variants/ themselves.
+    cp compose-variants/docker-compose.caddy.yml docker-compose.caddy.yml
+    if [[ "$USE_AUTHELIA" == true ]]; then
+        cp compose-variants/docker-compose.authelia.yml docker-compose.authelia.yml
+    fi
+
     print_info "Production configs generated successfully!"
     if [[ "$USE_AUTHELIA" == true ]]; then
         print_status "Authelia config: authelia/config/configuration.yml"
@@ -2945,8 +2954,8 @@ else
     echo -e "${CYAN}1. Deploy Caddy on your SSL termination machine:${NC}"
     echo -e "   Generated files:"
     echo -e "   • caddy/Caddyfile.production"
-    echo -e "   • compose-variants/docker-compose.caddy.yml"
-    echo -e "   • Copy these files to your Caddy machine (as caddy/Caddyfile and docker-compose.caddy.yml)"
+    echo -e "   • docker-compose.caddy.yml"
+    echo -e "   • Copy these files to your Caddy machine, preserving the caddy/ subdirectory"
     echo -e "   • Run: docker compose -f docker-compose.caddy.yml up -d"
     echo ""
     if [[ "$USE_AUTHELIA" == true ]]; then
@@ -2954,8 +2963,9 @@ else
         echo -e "   Generated files:"
         echo -e "   • authelia/config/configuration.yml"
         echo -e "   • authelia/config/users_database.yml"
-        echo -e "   • compose-variants/docker-compose.authelia.yml"
-        echo -e "   • Copy these files to your Authelia machine"
+        echo -e "   • docker-compose.authelia.yml"
+        echo -e "   • .env  (Authelia needs AUTHELIA_* secrets and POSTGRES_PASSWORD from it)"
+        echo -e "   • Copy these files to your Authelia machine, preserving the authelia/ subdirectory"
         echo -e "   • Run: docker compose -f docker-compose.authelia.yml up -d"
         echo ""
     elif [[ "$USE_CUSTOM_OIDC" == true ]]; then

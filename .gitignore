@@ -48,6 +48,8 @@ caddy-server/
 authelia-server/
 caddy/Caddyfile
 caddy/Caddyfile.production
+docker-compose.caddy.yml
+docker-compose.authelia.yml
 
 # Script result files (may contain PII: room names, phone numbers, user IDs)
 *-results.json

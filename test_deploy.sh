@@ -108,6 +108,7 @@ cleanup_configs() {
     info "Removing generated configs..."
     rm -f .env mas-signing.key authelia_private.pem
     rm -f caddy/Caddyfile caddy/Caddyfile.production
+    rm -f docker-compose.caddy.yml docker-compose.authelia.yml
     sudo rm -rf livekit 2>/dev/null || true
     mkdir -p livekit
     rm -f appservices/doublepuppet.yaml appservices/hookshot.yaml
@@ -129,6 +130,11 @@ cleanup_configs() {
 assert_file() {
     local file="$1" label="$2"
     [[ -f "$file" ]] && pass "$label" || fail "$label  (missing: $file)"
+}
+
+assert_no_file() {
+    local file="$1" label="$2"
+    [[ ! -f "$file" ]] && pass "$label" || fail "$label  (unexpectedly present: $file)"
 }
 
 assert_contains() {
@@ -841,6 +847,8 @@ assert_not_contains "/tmp/deploy_output_p.log" "Authelia Login Credentials" \
 assert_file "caddy/Caddyfile.production"                              "caddy/Caddyfile.production generated"
 assert_not_contains "caddy/Caddyfile.production" "authelia.example.com" \
                                                                        "Caddyfile.production → no Authelia vhost when SSO=None"
+assert_file "docker-compose.caddy.yml"                                "docker-compose.caddy.yml copied to project root"
+assert_no_file "docker-compose.authelia.yml"                          "docker-compose.authelia.yml not copied when SSO=None"
 assert_contains     "caddy/Caddyfile.production" "admin localhost:2019"        "Caddyfile.production → admin API localhost only"
 assert_contains     "caddy/Caddyfile.production" "/_synapse/admin"             "Caddyfile.production → synapse admin route present"
 assert_contains     "caddy/Caddyfile.production" 'Access-Control-Allow-Origin "https://admin.example.com"' \
@@ -872,6 +880,8 @@ header "Production distributed + Authelia assertions"
 assert_file "caddy/Caddyfile.production"                                    "caddy/Caddyfile.production generated"
 assert_contains "caddy/Caddyfile.production" "authelia.example.com {"       "Caddyfile.production → Authelia domain block present"
 assert_contains "caddy/Caddyfile.production" "reverse_proxy 10.0.1.20:9091" "Caddyfile.production → Authelia proxied to backend IP"
+assert_file "docker-compose.caddy.yml"                                      "docker-compose.caddy.yml copied to project root"
+assert_file "docker-compose.authelia.yml"                                   "docker-compose.authelia.yml copied to project root"
 assert_contains "/tmp/deploy_output_pd.log" "Deploy Authelia on your SSO machine" \
                                                                 "Summary → Authelia deploy step present"
 assert_contains "/tmp/deploy_output_pd.log" "Authelia Login Credentials" \
