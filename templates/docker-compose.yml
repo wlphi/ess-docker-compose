@@ -49,7 +49,7 @@ services:
   # Matrix Authentication Service (MAS)
   # Handles OIDC authentication for Synapse
   mas:
-    image: ghcr.io/element-hq/matrix-authentication-service:0.13.3
+    image: ghcr.io/element-hq/matrix-authentication-service:latest
     container_name: matrix-mas
     restart: unless-stopped
     ports:

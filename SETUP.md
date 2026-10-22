@@ -26,17 +26,25 @@ Key variables:
 | `POSTGRES_IMAGE` | PostgreSQL image (default: `postgres:16-alpine`) |
 | `SYNAPSE_IMAGE` | Synapse image (default: `matrixdotorg/synapse:latest`) |
 | `ELEMENT_IMAGE` | Element Web image (default: `vectorim/element-web:latest`) |
-| `ELEMENT_ADMIN_IMAGE` | Element Admin image (default: `oci.element.io/element-admin:latest`) |
+| `KETESA_IMAGE` | Ketesa admin dashboard image (default: `etkecc/ketesa:latest`) |
+| `FLUFFYCHAT_IMAGE` | FluffyChat image (default: `ghcr.io/krille-chan/fluffychat:latest`) |
 | `REDIS_IMAGE` | Redis image (default: `redis:7-alpine`) |
 | `MAS_IMAGE` | MAS image (default: `ghcr.io/element-hq/matrix-authentication-service:latest`) |
-| `TELEGRAM_IMAGE` | mautrix-telegram image (default: `dock.mau.dev/mautrix/telegram:latest`) |
-| `WHATSAPP_IMAGE` | mautrix-whatsapp image (default: `dock.mau.dev/mautrix/whatsapp:latest`) |
-| `SIGNAL_IMAGE` | mautrix-signal image (default: `dock.mau.dev/mautrix/signal:latest`) |
+| `TELEGRAM_IMAGE` | mautrix-telegram image (default: `dock.mau.dev/mautrix/telegram:v26.10`) |
+| `WHATSAPP_IMAGE` | mautrix-whatsapp image (default: `dock.mau.dev/mautrix/whatsapp:v26.10`) |
+| `SIGNAL_IMAGE` | mautrix-signal image (default: `dock.mau.dev/mautrix/signal:v26.10`) |
+| `DISCORD_IMAGE` | mautrix-discord image (default: `dock.mau.dev/mautrix/discord:v0.7.7`) |
+| `SLACK_IMAGE` | mautrix-slack image (default: `dock.mau.dev/mautrix/slack:v26.10`) |
+| `HOOKSHOT_IMAGE` | matrix-hookshot image (default: `ghcr.io/matrix-org/matrix-hookshot:latest`) |
+| `PROMETHEUS_IMAGE` | Prometheus image (default: `prom/prometheus:latest`) |
+| `GRAFANA_IMAGE` | Grafana image (default: `grafana/grafana:latest`) |
 | `LIVEKIT_IMAGE` | LiveKit image (default: `livekit/livekit-server:latest`) |
 | `LK_JWT_IMAGE` | lk-jwt-service image (default: `ghcr.io/element-hq/lk-jwt-service:latest`) |
 | `ELEMENT_CALL_IMAGE` | Element Call image (default: `ghcr.io/element-hq/element-call:latest`) |
 | `AUTHELIA_IMAGE` | Authelia image (default: `authelia/authelia:latest`) |
 | `CADDY_IMAGE` | Caddy image (default: `caddy:2-alpine`) |
+
+The mautrix bridges are pinned to release tags because their `:latest` tag follows the development branch. All other images track `latest` (or a major-version tag).
 
 All image variables are optional. If absent, each compose service falls back to the default tag via `${VAR:-default}` syntax, so `docker compose` works without a `.env` file.
 
@@ -78,9 +86,13 @@ If Element Call is enabled, also:
 
 ```yaml
 experimental_features:
-  msc3266_enabled: true
-  msc4222_enabled: true
-  msc4140_enabled: true
+  msc4143_enabled: true
+  msc4222_enabled: true   # not needed from Synapse 1.164
+
+matrix_rtc:
+  transports:
+    - type: livekit
+      livekit_service_url: https://rtc.example.com/livekit/jwt
 
 max_event_delay_duration: 24h
 
@@ -114,10 +126,11 @@ MAS client registrations required:
 | Client ID | Purpose |
 |-----------|---------|
 | `01HQW90Z35CMXFJWQPHC3BGZGQ` | Element Web (public client) |
-| `01ADMN00000000000000000000` | Element Admin (public client) |
-| `0000000000000000000SYNAPSE` | Synapse backend (confidential, client_secret_basic) |
+| `01FFCHAT00000000000000FC00` | FluffyChat (public client) |
 
-The client ID `01ADMN00000000000000000000` is a valid 26-character Crockford base32 ULID. The previously used `01ADMIN000000000000000000` (25 chars, contains `I`) was invalid and caused YAML parse errors on startup.
+Client IDs must be valid 26-character Crockford base32 ULIDs (no `I`, `L`, `O` or `U`), otherwise MAS fails to parse its config on startup.
+
+Synapse itself needs no MAS client: the stable `matrix_authentication_service` integration authenticates with the shared `matrix.secret`.
 
 Redirect URIs for Element Web:
 ```

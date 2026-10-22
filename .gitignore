@@ -14,6 +14,8 @@ authelia/config/notification.txt
 authelia/config/*.backup
 mas/config/config.yaml
 element/config/config.json
+element-call/config.json
+fluffychat/config.json
 synapse/data/homeserver.yaml
 synapse/data/homeserver.yaml.bak
 synapse/data/*.signing.key
@@ -50,6 +52,9 @@ caddy/Caddyfile
 caddy/Caddyfile.production
 docker-compose.caddy.yml
 docker-compose.authelia.yml
+
+# Scratch directory of test_deploy.sh Scenario BR
+.bridge-test.*/
 
 # Script result files (may contain PII: room names, phone numbers, user IDs)
 *-results.json

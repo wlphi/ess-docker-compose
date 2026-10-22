@@ -12,6 +12,9 @@ This document captures all the critical issues encountered during deployment and
 7. [MAS Database Caching](#7-mas-database-caching)
 8. [MAS Discovery URL for Internal Communication](#8-mas-discovery-url-for-internal-communication)
 9. [PostgreSQL Data Persistence Across Deployments](#9-postgresql-data-persistence-across-deployments)
+10. [DNS Resolution and TLS Certificate Trust Issues](#10-dns-resolution-and-tls-certificate-trust-issues)
+11. [FluffyChat Cross-Signing Setup with MAS](#11-fluffychat-cross-signing-setup-with-mas)
+12. [Upstream Breaking Changes (October 2026)](#12-upstream-breaking-changes-october-2026)
 
 ---
 
@@ -659,6 +662,66 @@ Track at:
 
 ---
 
+## 12. Upstream Breaking Changes (October 2026)
+
+Changes in bundled projects that silently broke parts of this stack. All are handled by `deploy.sh`, `quickstart.sh` and `setup-bridges.sh` as of v1.9.0; the notes below are for existing deployments and manual setups.
+
+### mautrix-telegram is now a Go megabridge
+mautrix-telegram v26.04 (2026-04-16) replaced the Python bridge with the Go bridgev2 implementation, which uses the same config layout as WhatsApp/Signal (`network:`, top-level `database:`, `double_puppet.secrets`, top-level `encryption:`). The old `setup-bridges.sh` edits targeted Python placeholders, matched nothing, and left a fresh Telegram config with example values.
+
+v26.10 (2026-10-16) also removed the Python → Go database migration: existing Python installs must run v26.04–v26.09 once before upgrading. See [BRIDGE_SETUP_GUIDE.md](BRIDGE_SETUP_GUIDE.md#upgrading-from-the-python-telegram-bridge).
+
+### mautrix `:latest` follows the development branch
+mautrix publishes `:latest` from the main branch, not from releases. The bridge images are now pinned to release tags (`v26.10`, Discord `v0.7.7`). Existing `.env` files from older `deploy.sh` runs still contain `*_IMAGE=...:latest` — update them or re-run `deploy.sh`.
+
+### Bridge domain must be the server name
+`setup-bridges.sh` used `MATRIX_DOMAIN` (the API host, e.g. `matrix.example.com`) as `homeserver.domain`, for permissions and for the double puppet secret. With short Matrix IDs (`@user:example.com`, the `deploy.sh` default) bridges rejected every user. It now uses `SERVER_NAME`.
+
+The same applied to lk-jwt-service: `LIVEKIT_FULL_ACCESS_HOMESERVERS` must list the **server name**, since lk-jwt-service matches it against the user's Matrix ID.
+
+### FluffyChat ignores snake_case config keys
+FluffyChat's `config.json` uses camelCase keys (`defaultHomeserver`, `presetHomeserver`). The `default_homeserver` / `homeserver_list` keys written previously were ignored, so FluffyChat defaulted to matrix.org. `presetHomeserver` (FluffyChat 2.5+) locks the web app to this server.
+
+### Hookshot registration: `receive_ephemeral`
+matrix-hookshot 7.4.3 requires the `receive_ephemeral: true` registration field instead of the legacy `de.sorunome.msc2409.push_ephemeral` / `push_ephemeral` flags. Fix existing deployments by editing `hookshot/registration.yaml` and `appservices/hookshot.yaml`, then restarting Synapse and hookshot.
+
+### Element Call: no `.well-known` discovery, no default server
+Element Call v0.24.0 (2026-08-18) removed `.well-known` transport discovery and its built-in default server config. Standalone Element Call now needs:
+
+- Synapse to advertise the LiveKit transport at `GET /_matrix/client/unstable/org.matrix.msc4143/rtc/transports`:
+  ```yaml
+  experimental_features:
+    msc4143_enabled: true
+
+  matrix_rtc:
+    transports:
+      - type: livekit
+        livekit_service_url: https://rtc.example.com/livekit/jwt
+  ```
+- A `config.json` with `default_server_config`, mounted at `/app/config.json` (`element-call/config.json`).
+
+Embedded calls from Element Web and Element X still fall back to `org.matrix.msc4143.rtc_foci` in `.well-known/matrix/client`, which is kept. Synapse 1.161 added a newer `url` transport field (SFU WebSocket URL), but clients that support it expect lk-jwt-service to run as an appservice (unstable MSC4195/MSC4502/MSC4512), so this stack lists only `livekit_service_url`.
+
+### Synapse metrics listener was never added
+Current `synapse generate` writes the client listener in a different YAML layout (`    - compress: false` instead of `        compress: false`). The metrics listener was inserted after that line, so on real deployments it was silently skipped and Prometheus had nothing to scrape on port 9000 (config-only tests used a hand-written stub in the old layout and still passed). The listener is now inserted directly under `listeners:`. Re-run `deploy.sh`/`quickstart.sh`, or add it manually:
+
+```yaml
+listeners:
+  - type: metrics
+    port: 9000
+    bind_addresses: ['0.0.0.0']
+    resources: []
+  # ... existing client listener ...
+```
+
+### Removed Synapse experimental flags
+`msc3266_enabled` (stabilised, flag removed in 1.153) and `msc4140_enabled` (never a flag — delayed events are enabled by `max_event_delay_duration`) are not read by Synapse and were dropped. `msc4222_enabled` is kept until Synapse 1.164 (which stabilises MSC4222 and removes the flag) is released. Synapse ignores unknown experimental flags, so leftover entries are harmless.
+
+### MAS leftovers from the msc3861 era
+Since Synapse 1.157 removed `experimental_features.msc3861`, the stable `matrix_authentication_service` section (MAS 0.20+) is the only integration. It authenticates with `matrix.secret`, so the `0000000000000000000SYNAPSE` client in the MAS config is no longer needed. `policy.data.registration.enabled` was never a MAS policy key; registration is controlled by `account.password_registration_enabled`.
+
+---
+
 ## Configuration Changes Checklist
 
 When making changes to the stack, follow this checklist to avoid common issues:
@@ -753,9 +816,17 @@ This is applied automatically by `deploy.sh` and `quickstart.sh`. If you have an
 
 Synapse 1.157.2 (2026-07-28) fixed 11 vulnerabilities (6 high, 3 moderate, 2 low severity) — see the [1.157.2 release notes](https://github.com/element-hq/synapse/releases/tag/v1.157.2) for the full ELEMENTSEC/GHSA list. Element HQ called this out as particularly relevant for homeservers that participate in open federation and/or have untrusted local users — this stack federates by default. No config changes needed; ensure you're running 1.157.2 or later.
 
+### mautrix-slack v26.09.1 — GHSA-7q4r-cx6x-8fjm
+
+Security release (2026-09-25); upstream says all users should update immediately. The pinned default `dock.mau.dev/mautrix/slack:v26.10` includes the fix.
+
+### lk-jwt-service v0.8.0 / v0.9.0 — standalone endpoint fixes
+
+v0.8.0 (GHSA-rq24-fh66-rq7x) fixed missing OpenID response validation on the deprecated `/get_token` and `/sfu/get` endpoints, which this stack uses; v0.9.0 hardened them further. Covered by pulling a current `ghcr.io/element-hq/lk-jwt-service:latest`.
+
 ### Updating images
 
-The compose file uses `latest` for all images. To apply any security update:
+The compose file uses `latest` for most images (the mautrix bridges are pinned to release tags). To apply any security update:
 
 ```bash
 docker compose pull

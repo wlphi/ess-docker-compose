@@ -349,11 +349,11 @@ ELEMENT_IMAGE=$(build_image "vectorim/element-web:latest")
 FLUFFYCHAT_IMAGE=$(build_image "ghcr.io/krille-chan/fluffychat:latest")
 KETESA_IMAGE=$(build_image "etkecc/ketesa:latest")
 MAS_IMAGE=$(build_image "ghcr.io/element-hq/matrix-authentication-service:latest")
-TELEGRAM_IMAGE=$(build_image "dock.mau.dev/mautrix/telegram:latest")
-WHATSAPP_IMAGE=$(build_image "dock.mau.dev/mautrix/whatsapp:latest")
-SIGNAL_IMAGE=$(build_image "dock.mau.dev/mautrix/signal:latest")
-DISCORD_IMAGE=$(build_image "dock.mau.dev/mautrix/discord:latest")
-SLACK_IMAGE=$(build_image "dock.mau.dev/mautrix/slack:latest")
+TELEGRAM_IMAGE=$(build_image "dock.mau.dev/mautrix/telegram:v26.10")
+WHATSAPP_IMAGE=$(build_image "dock.mau.dev/mautrix/whatsapp:v26.10")
+SIGNAL_IMAGE=$(build_image "dock.mau.dev/mautrix/signal:v26.10")
+DISCORD_IMAGE=$(build_image "dock.mau.dev/mautrix/discord:v0.7.7")
+SLACK_IMAGE=$(build_image "dock.mau.dev/mautrix/slack:v26.10")
 HOOKSHOT_IMAGE=$(build_image "ghcr.io/matrix-org/matrix-hookshot:latest")
 PROMETHEUS_IMAGE=$(build_image "prom/prometheus:latest")
 GRAFANA_IMAGE=$(build_image "grafana/grafana:latest")
@@ -640,6 +640,9 @@ DOUBLEPUPPET_HS_TOKEN=$(generate_hex_secret)
 if [[ "$USE_ELEMENT_CALL" == true ]]; then
     LIVEKIT_SECRET=$(generate_hex_secret)
 fi
+if [[ "$USE_MONITORING" == true ]]; then
+    GRAFANA_ADMIN_PASSWORD=$(generate_secret)
+fi
 print_status "Secrets generated"
 echo ""
 
@@ -728,6 +731,15 @@ if [[ "$USE_ELEMENT_CALL" == true ]]; then
 RTC_DOMAIN=${RTC_DOMAIN}
 CALL_DOMAIN=${CALL_DOMAIN}
 LIVEKIT_SECRET=${LIVEKIT_SECRET}
+EOF
+fi
+
+# Add monitoring variables
+if [[ "$USE_MONITORING" == true ]]; then
+    cat >> .env << EOF
+
+# Grafana admin login (user: admin) — applied when the grafana-data volume is first created
+GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
 EOF
 fi
 
@@ -847,10 +859,8 @@ access_control:
   default_policy: 'deny'
   rules:
     - domain:
-        - 'matrix.localhost'
-      policy: 'two_factor'
-    - domain:
-        - 'element.matrix.localhost'
+        - '${MATRIX_DOMAIN}'
+        - '${ELEMENT_DOMAIN}'
       policy: 'two_factor'
 
 identity_providers:
@@ -921,8 +931,7 @@ fi
 echo -e "${BLUE}[9/12] Generating MAS signing key and Synapse client secret...${NC}"
 openssl genrsa 4096 2>/dev/null | openssl pkcs8 -topk8 -nocrypt > mas-signing.key 2>/dev/null
 MAS_SIGNING_KEY=$(cat mas-signing.key)
-SYNAPSE_CLIENT_SECRET=$(generate_secret)
-print_status "MAS signing key and Synapse client secret generated"
+print_status "MAS signing key generated"
 echo ""
 
 # Step 10: Configure MAS
@@ -1098,11 +1107,6 @@ branding:
   policy_uri: 'https://${AUTH_DOMAIN}/privacy'
   tos_uri: 'https://${AUTH_DOMAIN}/terms'
 
-policy:
-  data:
-    registration:
-      enabled: ${OPEN_REGISTRATION}
-
 clients:
   # Element Web client (public)
   - client_id: '01HQW90Z35CMXFJWQPHC3BGZGQ'
@@ -1121,11 +1125,6 @@ clients:
       - 'https://${FLUFFYCHAT_DOMAIN}'
       - 'https://${FLUFFYCHAT_DOMAIN}/'
       - 'im.fluffychat://login'
-
-  # Synapse client (confidential - for backend integration)
-  - client_id: '0000000000000000000SYNAPSE'
-    client_auth_method: client_secret_basic
-    client_secret: '${SYNAPSE_CLIENT_SECRET}'
 EOF
 
 if [[ "$USE_AUTHELIA" == true ]]; then
@@ -1186,6 +1185,26 @@ cat > element/config/config.json << EOF
 }
 EOF
 print_status "Element Web configuration created"
+
+# Element Call frontend config — needed when Element Call is opened directly
+# (standalone). Since v0.24 the image ships no default homeserver.
+if [[ "$USE_ELEMENT_CALL" == true ]]; then
+    mkdir -p element-call
+    cat > element-call/config.json << EOF
+{
+    "default_server_config": {
+        "m.homeserver": {
+            "base_url": "https://${MATRIX_DOMAIN}",
+            "server_name": "${SERVER_NAME}"
+        }
+    },
+    "livekit": {
+        "livekit_service_url": "https://${RTC_DOMAIN}/livekit/jwt"
+    }
+}
+EOF
+    print_status "Element Call configuration created"
+fi
 echo ""
 
 # Step 11.1: Create FluffyChat config (if enabled)
@@ -1194,14 +1213,9 @@ if [[ "$USE_FLUFFYCHAT" == true ]]; then
     mkdir -p fluffychat
     cat > fluffychat/config.json << EOF
 {
-    "default_homeserver": "${SERVER_NAME}",
-    "homeserver_list": [
-        {
-            "name": "${SERVER_NAME}",
-            "server_url": "https://${MATRIX_DOMAIN}",
-            "isDefault": true
-        }
-    ]
+    "applicationName": "FluffyChat",
+    "defaultHomeserver": "${MATRIX_DOMAIN}",
+    "presetHomeserver": "${MATRIX_DOMAIN}"
 }
 EOF
     print_status "FluffyChat configuration created"
@@ -1361,8 +1375,7 @@ as_token: ${HOOKSHOT_AS_TOKEN}
 hs_token: ${HOOKSHOT_HS_TOKEN}
 sender_localpart: hookshot
 rate_limited: false
-de.sorunome.msc2409.push_ephemeral: true
-push_ephemeral: true
+receive_ephemeral: true
 namespaces:
   users:
     - regex: "@_webhooks_.*:${SERVER_NAME}"
@@ -1410,12 +1423,14 @@ server_name: "${SERVER_NAME}"
 pid_file: /data/homeserver.pid
 listeners:
   - port: 8008
+    resources:
+    - compress: false
+      names:
+      - client
+      - federation
     tls: false
     type: http
     x_forwarded: true
-    resources:
-      - names: [client, federation]
-        compress: false
 log_config: "/data/${SERVER_NAME}.log.config"
 media_store_path: /data/media_store
 report_stats: false
@@ -1448,7 +1463,7 @@ cp synapse/data/homeserver.yaml synapse/data/homeserver.yaml.bak 2>/dev/null || 
 # Remove old database configuration (both SQLite and PostgreSQL)
 sed -i '/^database:/,/^[^ ]/{ /^database:/d; /^[^ ]/!d }' synapse/data/homeserver.yaml
 
-# Remove old MAS integration sections (msc3861 removed in Synapse 1.137+)
+# Remove old MAS integration sections (experimental msc3861 removed in Synapse 1.157)
 sed -i '/^# MAS Integration/,/^[^ ]/{ /^# MAS Integration/d; /^[^ ]/!d }' synapse/data/homeserver.yaml
 sed -i '/^experimental_features:/,/^[^ ]/{ /^experimental_features:/d; /^[^ ]/!d }' synapse/data/homeserver.yaml
 # Remove old stable MAS config block (so we can re-add with correct secret)
@@ -1472,6 +1487,10 @@ sed -i '/^app_service_config_files:/,/^[^ ]/{ /^app_service_config_files:/d; /^[
 
 # Remove old Element Call rate limit config if present (prevents duplication on re-run)
 sed -i '/^# Element Call: delayed event rate limiting/d' synapse/data/homeserver.yaml
+sed -i '/^# Element Call: delayed events (MSC4140)/d' synapse/data/homeserver.yaml
+sed -i '/^# Element Call MSC features/d' synapse/data/homeserver.yaml
+sed -i '/^# Element Call: advertise the LiveKit transport/,/^# Clients that don.t support it yet/d' synapse/data/homeserver.yaml
+sed -i '/^matrix_rtc:/,/^[^ ]/{ /^matrix_rtc:/d; /^[^ ]/!d }' synapse/data/homeserver.yaml
 sed -i '/^max_event_delay_duration:/d' synapse/data/homeserver.yaml
 sed -i '/^rc_delayed_event_mgmt:/,/^[^ ]/{ /^rc_delayed_event_mgmt:/d; /^[^ ]/!d }' synapse/data/homeserver.yaml
 
@@ -1508,13 +1527,19 @@ EOF
 if [[ "$USE_ELEMENT_CALL" == true ]]; then
     cat >> synapse/data/homeserver.yaml << EOF
 
-# Element Call MSC features
+# Element Call: advertise the LiveKit transport via GET /rtc/transports (MSC4143).
+# Clients that don't support it yet fall back to rtc_foci in .well-known/matrix/client.
 experimental_features:
-  msc3266_enabled: true
+  msc4143_enabled: true
+  # state_after in /sync (MSC4222) — stable in Synapse 1.164+, flag needed until then
   msc4222_enabled: true
-  msc4140_enabled: true
 
-# Element Call: delayed event rate limiting
+matrix_rtc:
+  transports:
+    - type: livekit
+      livekit_service_url: https://${RTC_DOMAIN}/livekit/jwt
+
+# Element Call: delayed events (MSC4140) are enabled by setting a maximum delay
 max_event_delay_duration: 24h
 
 rc_delayed_event_mgmt:
@@ -1566,8 +1591,9 @@ sed -i '/# ess-deploy:metrics-listener/,/^  - \|^[^ ]/{ /# ess-deploy:metrics-li
 rm -f synapse/data/metrics.yaml
 
 if [[ "$USE_MONITORING" == true ]]; then
-    sed -i '/^        compress: false/a\
-\
+    # Insert as the first listeners: entry — anchoring inside the client listener
+    # breaks whenever `synapse generate` changes its YAML layout.
+    sed -i '/^listeners:/a\
   - type: metrics   # ess-deploy:metrics-listener\
     port: 9000\
     bind_addresses: ['"'"'0.0.0.0'"'"']\
@@ -2964,7 +2990,7 @@ else
         echo -e "   • authelia/config/configuration.yml"
         echo -e "   • authelia/config/users_database.yml"
         echo -e "   • docker-compose.authelia.yml"
-        echo -e "   • .env  (Authelia needs AUTHELIA_* secrets and POSTGRES_PASSWORD from it)"
+        echo -e "   • .env  (docker-compose.authelia.yml reads TZ and AUTHELIA_POSTGRES_PASSWORD from it)"
         echo -e "   • Copy these files to your Authelia machine, preserving the authelia/ subdirectory"
         echo -e "   • Run: docker compose -f docker-compose.authelia.yml up -d"
         echo ""
@@ -3024,6 +3050,12 @@ else
         echo -e "  • Element Call: https://${CALL_DOMAIN}"
         echo -e "  • LiveKit JWT:  https://${RTC_DOMAIN}/livekit/jwt"
     fi
+    echo ""
+fi
+if [[ "$USE_MONITORING" == true ]]; then
+    echo -e "${BLUE}Grafana Login:${NC}"
+    echo -e "  • Username:     admin"
+    echo -e "  • Password:     ${GRAFANA_ADMIN_PASSWORD}  (also saved in .env as GRAFANA_ADMIN_PASSWORD)"
     echo ""
 fi
 echo -e "${BLUE}Useful Commands:${NC}"

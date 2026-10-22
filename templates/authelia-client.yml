@@ -42,9 +42,10 @@
     authorization_policy: one_factor
 
     # Redirect URIs - CRITICAL: Must match exactly!
-    # MAS will redirect users here after authentication
+    # MAS will redirect users here after authentication.
+    # {{UPSTREAM_PROVIDER_ID}} is the upstream_oauth2.providers[].id in the MAS config
     redirect_uris:
-      - https://{{MATRIX_DOMAIN}}/oauth2/callback
+      - https://{{AUTH_DOMAIN}}/upstream/callback/{{UPSTREAM_PROVIDER_ID}}
 
     # Scopes that this client can request
     scopes:
@@ -68,7 +69,7 @@
       - refresh_token
 
     # Token endpoint authentication method
-    token_endpoint_auth_method: client_secret_post
+    token_endpoint_auth_method: client_secret_basic
 
     # User consent settings
     # Options:
@@ -96,7 +97,7 @@
 #   public: false
 #   authorization_policy: one_factor
 #   redirect_uris:
-#     - https://matrix.example.com/oauth2/callback
+#     - https://auth.example.com/upstream/callback/01HQW90Z35CMXFJWQPHC3BGZGQ
 #   scopes:
 #     - openid
 #     - profile
@@ -110,7 +111,7 @@
 #   grant_types:
 #     - authorization_code
 #     - refresh_token
-#   token_endpoint_auth_method: client_secret_post
+#   token_endpoint_auth_method: client_secret_basic
 #   consent_mode: implicit
 
 # ============================================
@@ -119,7 +120,7 @@
 #
 # Issue: "Invalid redirect URI"
 # Solution: Ensure the redirect_uri in Authelia EXACTLY matches:
-#   https://{{MATRIX_DOMAIN}}/oauth2/callback
+#   https://{{AUTH_DOMAIN}}/upstream/callback/{{UPSTREAM_PROVIDER_ID}}
 #   No trailing slashes, correct protocol (https)
 #
 # Issue: "Invalid client authentication"
@@ -145,8 +146,13 @@
 #
 # identity_providers:
 #   oidc:
-#     # OIDC issuer configuration
-#     issuer_private_key: /config/oidc-issuer-key.pem
+#     hmac_secret: '<random 64+ character secret>'
+#     # OIDC signing keys (issuer_private_key was replaced by jwks in Authelia 4.38)
+#     jwks:
+#       - key_id: 'main'
+#         algorithm: 'RS256'
+#         use: 'sig'
+#         key: {{ secret "/config/oidc-issuer-key.pem" | mindent 10 "|" | msquote }}
 #
 #     # Clients
 #     clients:

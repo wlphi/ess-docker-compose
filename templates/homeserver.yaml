@@ -56,20 +56,12 @@ matrix_authentication_service:
   # Internal endpoint where Synapse contacts MAS
   endpoint: "http://mas:8080"
   # Shared secret - MUST match `matrix.secret` in MAS config
-  secret: "ThisTokenIsStaticallyConfiguredAndShouldNotBeUsedInProduction"
+  secret: "{{SYNAPSE_SHARED_SECRET}}"
 
 # Experimental features
 experimental_features:
-  # Enable QR code login (requires Synapse 1.106+)
-  # Transfers crypto identity without needing password/passphrase
-  msc4108_enabled: true
-  msc3882_enabled: true
-
-  # Bridge encryption features (experimental)
-  # NOTE: As of Synapse 1.144.0, MSC4190 has compatibility issues with MAS
-  # Keep these enabled for future compatibility, but bridges should disable encryption for now
-  msc4190_enabled: true
-  msc3202_device_masquerading: true
+  # Appservice extensions used by bridges (to-device messages, transaction extensions)
+  # Bridge encryption stays disabled: MSC4190 device management is not compatible with MAS yet
   msc3202_transaction_extensions: true
   msc2409_to_device_messages_enabled: true
 
@@ -190,7 +182,7 @@ caches:
 #
 # 4. Matrix Authentication Service: Synapse 1.136+ uses stable MAS integration
 #    The 'secret' in matrix_authentication_service MUST match 'matrix.secret' in MAS config
-#    Old experimental_features.msc3861 is deprecated and removed in Synapse 1.137+
+#    Old experimental_features.msc3861 was removed in Synapse 1.157
 #
 # 5. Signing Key: Will be auto-generated on first run if not present
 #

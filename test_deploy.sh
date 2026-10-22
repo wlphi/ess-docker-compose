@@ -91,6 +91,8 @@ teardown_stack() {
     info "Stopping Docker stack and removing volumes..."
     if sudo docker ps &>/dev/null 2>&1; then
         $COMPOSE_CMD -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
+        # `down` skips services of profiles that aren't active (e.g. monitoring)
+        sudo docker ps -aq --filter "name=^matrix-" | xargs -r sudo docker rm -f >/dev/null 2>&1 || true
     fi
     sudo rm -rf postgres/data mas/data mas/certs caddy/data caddy/config 2>/dev/null || true
     # Wipe synapse/data fully so no leftover signing keys or log configs confuse the
@@ -121,6 +123,7 @@ cleanup_configs() {
     sudo rm -f mas/config/config.yaml 2>/dev/null || true
     sudo rm -f element/config/config.json 2>/dev/null || true
     sudo rm -f fluffychat/config.json 2>/dev/null || true
+    sudo rm -f element-call/config.json 2>/dev/null || true
     sudo rm -f authelia/config/configuration.yml authelia/config/users_database.yml 2>/dev/null || true
     sudo rm -f synapse/data/homeserver.yaml synapse/data/homeserver.yaml.bak 2>/dev/null || true
     sudo rm -f synapse/data/metrics.yaml 2>/dev/null || true
@@ -139,7 +142,7 @@ assert_no_file() {
 
 assert_contains() {
     local file="$1" pattern="$2" label="$3"
-    if grep -qF "$pattern" "$file" 2>/dev/null; then
+    if grep -qF -- "$pattern" "$file" 2>/dev/null; then
         pass "$label"
     else
         fail "$label  [expected '${pattern}' in ${file}]"
@@ -148,7 +151,7 @@ assert_contains() {
 
 assert_not_contains() {
     local file="$1" pattern="$2" label="$3"
-    if grep -qF "$pattern" "$file" 2>/dev/null; then
+    if grep -qF -- "$pattern" "$file" 2>/dev/null; then
         fail "$label  [unexpected '${pattern}' found in ${file}]"
     else
         pass "$label"
@@ -158,7 +161,7 @@ assert_not_contains() {
 # Regex variant — use when the value may be quoted/unquoted (grep -E)
 assert_matches() {
     local file="$1" pattern="$2" label="$3"
-    if grep -qE "$pattern" "$file" 2>/dev/null; then
+    if grep -qE -- "$pattern" "$file" 2>/dev/null; then
         pass "$label"
     else
         fail "$label  [expected /$pattern/ in ${file}]"
@@ -337,13 +340,6 @@ assert_configs() {
         "issuer: 'https://${auth_domain}/'"                  "MAS → issuer uses auth domain"
     assert_contains "mas/config/config.yaml" \
         "endpoint: 'http://synapse:8008'"                    "MAS → synapse endpoint correct"
-    if [[ "$open_reg" == "true" ]]; then
-        assert_contains "mas/config/config.yaml" \
-            "      enabled: true"                            "MAS → open registration enabled"
-    else
-        assert_contains "mas/config/config.yaml" \
-            "      enabled: false"                           "MAS → open registration disabled by default"
-    fi
     assert_contains "mas/config/config.yaml" \
         "algorithm: argon2id"                                "MAS → argon2id scheme present"
     assert_contains "mas/config/config.yaml" \
@@ -359,10 +355,12 @@ assert_configs() {
         assert_contains "mas/config/config.yaml" \
             "password_registration_enabled: false"           "MAS → password_registration_enabled false"
     fi
-    assert_contains "mas/config/config.yaml" \
-        "policy:"                                            "MAS → policy block present"
-    assert_contains "mas/config/config.yaml" \
-        "data:"                                              "MAS → policy uses data: nesting"
+    # policy.data.registration.enabled is not a MAS policy key (registration is
+    # account.password_registration_enabled); the Synapse client is an msc3861 leftover
+    assert_not_contains "mas/config/config.yaml" \
+        "policy:"                                            "MAS → no undocumented policy.data.registration block"
+    assert_not_contains "mas/config/config.yaml" \
+        "0000000000000000000SYNAPSE"                         "MAS → no msc3861-era Synapse client"
 
     # ── Synapse config correctness ───────────────────────────────────────────
     assert_contains "synapse/data/homeserver.yaml" \
@@ -648,12 +646,12 @@ assert_quickstart_configs() {
     assert_contains "mas/config/config.yaml"  "name: adminapi"                        "MAS → adminapi listener"
     assert_contains "mas/config/config.yaml"  "public_base: 'https://${auth_domain}/'" "MAS → public_base"
     assert_contains "mas/config/config.yaml"  "issuer: 'https://${auth_domain}/'"     "MAS → issuer"
-    assert_contains "mas/config/config.yaml"  "enabled: false"                                   "MAS → open registration disabled"
     assert_contains "mas/config/config.yaml"  "algorithm: argon2id"                              "MAS → argon2id scheme present"
     assert_contains "mas/config/config.yaml"  "minimum_complexity: 3"                            "MAS → minimum_complexity set"
     assert_contains "mas/config/config.yaml"  "password_registration_email_required: false"      "MAS → email not required"
     assert_contains "mas/config/config.yaml"  "password_registration_enabled: false"             "MAS → password_registration_enabled false"
-    assert_contains "mas/config/config.yaml"  "data:"                                            "MAS → policy uses data: nesting"
+    assert_not_contains "mas/config/config.yaml" "policy:"                                       "MAS → no undocumented policy.data.registration block"
+    assert_not_contains "mas/config/config.yaml" "0000000000000000000SYNAPSE"                    "MAS → no msc3861-era Synapse client"
 
     assert_file "element/config/config.json"  "element/config/config.json generated"
 
@@ -678,7 +676,9 @@ assert_quickstart_configs() {
     # FluffyChat config (quickstart always generates it)
     assert_file "fluffychat/config.json"          "fluffychat/config.json generated"
     assert_valid_json  "fluffychat/config.json"
-    assert_contains "fluffychat/config.json"      "matrix.${domain}"         "FluffyChat config → homeserver domain"
+    assert_contains "fluffychat/config.json"      "\"defaultHomeserver\": \"matrix.${domain}\"" "FluffyChat config → defaultHomeserver (camelCase key)"
+    assert_contains "fluffychat/config.json"      "\"presetHomeserver\": \"matrix.${domain}\""  "FluffyChat config → presetHomeserver locks the homeserver"
+    assert_not_contains "fluffychat/config.json"  "default_homeserver"       "FluffyChat config → no ignored snake_case keys"
     assert_contains "caddy/Caddyfile"             "reverse_proxy fluffychat:80" "Caddyfile → FluffyChat reverse_proxy"
     assert_contains "mas/config/config.yaml"      "im.fluffychat://login"    "MAS → FluffyChat native redirect URI registered"
 
@@ -793,6 +793,38 @@ assert_contains "docker-compose.yml" 'hookshot'          "docker-compose.yml →
 assert_contains "docker-compose.yml" 'prometheus'        "docker-compose.yml → prometheus service present"
 assert_contains "docker-compose.yml" 'grafana'           "docker-compose.yml → grafana service present"
 assert_contains "docker-compose.yml" 'synapse-auto-compressor' "docker-compose.yml → auto-compressor service present"
+
+section "Static · upstream compatibility (v1.9.0)"
+for _cf in docker-compose.yml compose-variants/docker-compose.local.yml; do
+    # mautrix :latest follows the development branch — bridges must be pinned to releases
+    assert_not_contains "$_cf" 'dock.mau.dev/mautrix/telegram:latest' "$_cf → telegram bridge pinned"
+    assert_not_contains "$_cf" 'dock.mau.dev/mautrix/whatsapp:latest' "$_cf → whatsapp bridge pinned"
+    assert_not_contains "$_cf" 'dock.mau.dev/mautrix/signal:latest'   "$_cf → signal bridge pinned"
+    assert_not_contains "$_cf" 'dock.mau.dev/mautrix/discord:latest'  "$_cf → discord bridge pinned"
+    assert_not_contains "$_cf" 'dock.mau.dev/mautrix/slack:latest'    "$_cf → slack bridge pinned"
+    # synapse_auto_compressor exits after each run — must loop with a pause, short flags only
+    assert_contains "$_cf" 'sleep "$$COMPRESSOR_INTERVAL"'            "$_cf → auto-compressor runs on an interval"
+    assert_contains "$_cf" 'synapse_auto_compressor -p "$$COMPRESSOR_DB_URL" -c 500 -n 100' \
+                                                                       "$_cf → auto-compressor uses short flags"
+    assert_not_contains "$_cf" '--db-url'                             "$_cf → no unsupported long compressor flags"
+    # lk-jwt-service matches the user's server name, not the API host
+    assert_contains "$_cf" 'LIVEKIT_FULL_ACCESS_HOMESERVERS=${SERVER_NAME:-${MATRIX_DOMAIN}}' \
+                                                                       "$_cf → lk-jwt full-access homeserver is the server name"
+    assert_contains "$_cf" './element-call/config.json:/app/config.json:ro' \
+                                                                       "$_cf → Element Call config.json mounted"
+    # AUTHELIA_* env vars override config keys; AUTHELIA_JWT_SECRET maps to a deprecated key
+    assert_not_contains "$_cf" 'AUTHELIA_JWT_SECRET'                  "$_cf → no deprecated AUTHELIA_JWT_SECRET env"
+    assert_contains "$_cf" 'GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}' \
+                                                                       "$_cf → Grafana admin password from .env"
+done
+assert_not_contains "compose-variants/docker-compose.authelia.yml" 'AUTHELIA_JWT_SECRET' \
+                                                                       "docker-compose.authelia.yml → no deprecated AUTHELIA_JWT_SECRET env"
+assert_contains "synapse_auto_compressor/Dockerfile" 'FROM rust:1-slim-trixie AS builder' \
+                                                                       "compressor Dockerfile → builder on trixie"
+assert_contains "synapse_auto_compressor/Dockerfile" 'FROM debian:trixie-slim' \
+                                                                       "compressor Dockerfile → runtime on trixie (same glibc)"
+assert_not_contains "templates/docker-compose.yml" 'matrix-authentication-service:0.13' \
+                                                                       "templates → MAS not pinned to pre-0.20 release"
 
 # Scenario A — TLD identity:       @user:example.test
 run_scenario \
@@ -919,8 +951,6 @@ printf '%s\n' "example.test" "test@example.test" "n" "y" \
 header "Quickstart open registration assertions"
 assert_file "mas/config/config.yaml" "mas/config/config.yaml generated"
 assert_contains "mas/config/config.yaml" \
-    "      enabled: true"    "MAS → open registration enabled when y chosen (quickstart)"
-assert_contains "mas/config/config.yaml" \
     "password_registration_email_required: false"  "MAS → email not required (quickstart open reg)"
 assert_contains "mas/config/config.yaml" \
     "password_registration_enabled: true"          "MAS → password_registration_enabled true (quickstart)"
@@ -973,6 +1003,19 @@ assert_file "livekit/livekit.yaml"                                        "livek
 assert_contains     "livekit/livekit.yaml"     "auto_create: false"       "LiveKit → room.auto_create: false"
 assert_not_contains "element/config/config.json" "participant_limit"      "Element config → no participant_limit"
 assert_contains     "element/config/config.json" "element_call"           "Element config → element_call block present"
+# Element Call v0.24+: transports via Synapse's /rtc/transports (MSC4143), no default server config
+assert_contains     "synapse/data/homeserver.yaml" "msc4143_enabled: true"   "Synapse → MSC4143 /rtc/transports enabled"
+assert_contains     "synapse/data/homeserver.yaml" "matrix_rtc:"             "Synapse → matrix_rtc block present"
+assert_contains     "synapse/data/homeserver.yaml" \
+    "livekit_service_url: https://rtc.example.test/livekit/jwt"              "Synapse → matrix_rtc LiveKit transport"
+assert_contains     "synapse/data/homeserver.yaml" "max_event_delay_duration: 24h" "Synapse → delayed events enabled"
+assert_not_contains "synapse/data/homeserver.yaml" "msc3266_enabled"         "Synapse → no removed msc3266 flag"
+assert_not_contains "synapse/data/homeserver.yaml" "msc4140_enabled"         "Synapse → no non-existent msc4140 flag"
+assert_file "element-call/config.json"                                    "element-call/config.json generated"
+assert_valid_json   "element-call/config.json"
+assert_contains     "element-call/config.json" "\"server_name\": \"example.test\"" "Element Call config → server name"
+assert_contains     "element-call/config.json" \
+    "\"livekit_service_url\": \"https://rtc.example.test/livekit/jwt\""   "Element Call config → LiveKit JWT service"
 # Issue #20: LIVEKIT_SECRET must be pure hex (go-jose requires it; base64 causes JWT signing errors)
 assert_matches ".env" "^LIVEKIT_SECRET=[0-9a-f]{64}$"                    ".env → LIVEKIT_SECRET is 64-char hex"
 assert_valid_yaml "livekit/livekit.yaml"
@@ -1013,21 +1056,30 @@ else
     if [[ "$SKIP_INTEGRATION" == "true" ]]; then
         warn "Skipping port-8008 live check (SKIP_INTEGRATION=true)"
     else
-        info "Allowing 30s for Synapse to start with metrics.yaml present..."
-        sleep 30
+        info "Waiting up to 120s for Synapse to start with metrics.yaml present..."
 
         # Hit port 8008 directly inside the container — this is what the metrics.yaml
         # listeners-key collision kills. Going through Caddy (443) would mask the failure
         # because Caddy health-checks its upstreams lazily.
-        _m_health=$(sudo docker exec matrix-synapse \
-            curl -sf --max-time 10 http://localhost:8008/health 2>/dev/null || echo "FAILED")
+        _m_health="FAILED"
+        for _m_try in $(seq 1 24); do
+            _m_health=$(sudo docker exec matrix-synapse \
+                curl -sf --max-time 10 http://localhost:8008/health 2>/dev/null || echo "FAILED")
+            [[ "$_m_health" == "OK" ]] && break
+            sleep 5
+        done
         [[ "$_m_health" == "OK" ]] \
             && pass "Synapse port 8008 reachable with metrics.yaml present (no listener collision)" \
             || fail "Synapse port 8008 unreachable — metrics.yaml listeners key clobbered homeserver.yaml listener (got: '${_m_health}')"
 
         # Also confirm the metrics listener on port 9000 is up
-        _m_metrics=$(sudo docker exec matrix-synapse \
-            curl -sf --max-time 10 -o /dev/null -w "%{http_code}" http://localhost:9000/metrics 2>/dev/null || echo "000")
+        _m_metrics="000"
+        for _m_try in $(seq 1 6); do
+            _m_metrics=$(sudo docker exec matrix-synapse \
+                curl -s --max-time 10 -o /dev/null -w "%{http_code}" http://localhost:9000/metrics 2>/dev/null || true)
+            [[ "$_m_metrics" == "200" ]] && break
+            sleep 5
+        done
         [[ "$_m_metrics" == "200" ]] \
             && pass "Synapse metrics port 9000 responds (HTTP ${_m_metrics})" \
             || fail "Synapse metrics port 9000 not responding (HTTP ${_m_metrics})"
@@ -1184,6 +1236,127 @@ assert_contains "authelia/config/configuration.yml" "jwt_secret:"    "Authelia c
 assert_contains "authelia/config/configuration.yml" "hmac_secret:"   "Authelia config → hmac_secret present"
 assert_contains "authelia/config/users_database.yml" "users:"        "Authelia users db → users block present"
 assert_contains "authelia/config/users_database.yml" "admin"         "Authelia users db → admin user present"
+assert_not_contains "authelia/config/configuration.yml" "matrix.localhost" "Authelia config → no hardcoded matrix.localhost ACL"
+assert_contains "authelia/config/configuration.yml" "- 'matrix.example.test'" "Authelia config → ACL uses MATRIX_DOMAIN"
+
+# Scenario H — hookshot + FluffyChat + monitoring (config only)
+section "H · Hookshot, FluffyChat, monitoring  (config only)"
+teardown_stack
+cleanup_configs
+info "Running deploy.sh with FluffyChat, monitoring and hookshot (piped stdin, SKIP_START=true)"
+# Stdin answers in prompt order:
+#   [1] Deployment type:                1  (local)
+#   [2] SSO provider choice:            (empty → 1=None)
+#   [3] Enable Element Call?            n
+#   [4] Enable FluffyChat?              y
+#   [5] Enable monitoring?              y
+#   [6] Enable hookshot?                y
+#   [7] Allow open registration?        n
+#   [8] Custom Docker registry prefix:  (empty)
+#   [9] Use hardened images?            n
+#  [10] SERVER_NAME choice:             1  (TLD)
+#  [11] Press Enter to continue:        (empty)
+printf '%s\n' "1" "" "n" "y" "y" "y" "n" "" "n" "1" "" \
+    | SKIP_START=true bash deploy.sh
+header "Hookshot / FluffyChat / Grafana assertions"
+assert_file "hookshot/registration.yaml"                                    "hookshot/registration.yaml generated"
+assert_valid_yaml "hookshot/registration.yaml"
+assert_contains     "hookshot/registration.yaml" "receive_ephemeral: true"  "Hookshot registration → receive_ephemeral (hookshot 7.4.3+)"
+assert_not_contains "hookshot/registration.yaml" "push_ephemeral"           "Hookshot registration → no legacy push_ephemeral flags"
+assert_contains "synapse/data/homeserver.yaml" "/appservices/hookshot.yaml" "Synapse → hookshot registration loaded"
+assert_file "fluffychat/config.json"                                        "fluffychat/config.json generated"
+assert_valid_json "fluffychat/config.json"
+assert_contains     "fluffychat/config.json" '"defaultHomeserver": "matrix.example.test"' "FluffyChat config → defaultHomeserver (camelCase key)"
+assert_contains     "fluffychat/config.json" '"presetHomeserver": "matrix.example.test"'  "FluffyChat config → presetHomeserver"
+assert_not_contains "fluffychat/config.json" "homeserver_list"              "FluffyChat config → no ignored snake_case keys"
+assert_matches ".env" "^GRAFANA_ADMIN_PASSWORD=.{16,}$"                     ".env → Grafana admin password generated"
+# Regression: the metrics listener was anchored on a client-listener line whose
+# layout `synapse generate` changed, so it was silently never added
+assert_contains "synapse/data/homeserver.yaml" "type: metrics   # ess-deploy:metrics-listener" \
+                                                                            "Synapse → metrics listener added (generator YAML layout)"
+assert_valid_yaml "synapse/data/homeserver.yaml"
+if python3 -c "import sys, yaml; d = yaml.safe_load(open(sys.argv[1])); sys.exit(0 if sorted(l['port'] for l in d['listeners']) == [8008, 9000] else 1)" \
+        synapse/data/homeserver.yaml 2>/dev/null; then
+    pass "Synapse → listeners are exactly 8008 (client) + 9000 (metrics)"
+else
+    fail "Synapse → listeners are not exactly 8008 + 9000"
+fi
+
+# Scenario BR — bridge configuration against real default configs (needs Docker)
+section "BR · setup-bridges.sh bridge configuration"
+if [[ "$SKIP_DOCKER" == "true" ]] || ! sudo docker ps &>/dev/null 2>&1; then
+    warn "Docker not available — skipping Scenario BR (needs bridge images to generate default configs)"
+else
+    # Inside the repo: bind mounts must resolve on the Docker host (also under dind)
+    _br_dir=$(mktemp -d "$PWD/.bridge-test.XXXXXX")
+    _br_ok=true
+    declare -A _br_images=(
+        [telegram]="dock.mau.dev/mautrix/telegram:v26.10"
+        [whatsapp]="dock.mau.dev/mautrix/whatsapp:v26.10"
+        [signal]="dock.mau.dev/mautrix/signal:v26.10"
+        [slack]="dock.mau.dev/mautrix/slack:v26.10"
+        [discord]="dock.mau.dev/mautrix/discord:v0.7.7"
+    )
+    # Defaults must match the compose file, so a version bump updates both
+    for _b in "${!_br_images[@]}"; do
+        assert_contains "docker-compose.yml" "${_br_images[$_b]}" "docker-compose.yml → ${_b} bridge default image ${_br_images[$_b]}"
+    done
+    for _b in "${!_br_images[@]}"; do
+        mkdir -p "$_br_dir/$_b"
+        # First start writes the default config.yaml and exits
+        # Run as the current user so the generated files are readable without sudo
+        sudo docker run --rm --user "$(id -u):$(id -g)" -v "$_br_dir/$_b:/data" \
+            "${_br_images[$_b]}" >/dev/null 2>&1 || true
+        if [[ -f "$_br_dir/$_b/config.yaml" ]]; then
+            cp "$_br_dir/$_b/config.yaml" "$_br_dir/$_b.yaml"
+        else
+            fail "${_b}: bridge image did not generate a default config"
+            _br_ok=false
+        fi
+    done
+    if [[ "$_br_ok" == "true" ]]; then
+        (
+            SUDO=""
+            # shellcheck source=setup-bridges.sh
+            source ./setup-bridges.sh
+            SERVER_NAME=example.test MATRIX_DOMAIN=matrix.example.test POSTGRES_PASSWORD=pgpass
+            DOUBLEPUPPET_AS_TOKEN=dptoken TELEGRAM_API_ID=424242 TELEGRAM_API_HASH=tghash
+            configure_telegram   "$_br_dir/telegram.yaml"
+            configure_megabridge "$_br_dir/whatsapp.yaml" whatsapp 29318
+            configure_megabridge "$_br_dir/signal.yaml"   signal   29328
+            configure_megabridge "$_br_dir/slack.yaml"    slack    29335
+            configure_discord    "$_br_dir/discord.yaml"
+        )
+        declare -A _br_ports=([telegram]=29317 [whatsapp]=29318 [signal]=29328 [slack]=29335 [discord]=29334)
+        for _b in "${!_br_images[@]}"; do
+            _f="$_br_dir/$_b.yaml"
+            assert_valid_yaml "$_f"
+            assert_contains "$_f" "    address: http://synapse:8008"                 "${_b} → homeserver address"
+            assert_contains "$_f" "    domain: example.test"                         "${_b} → homeserver domain is the server name"
+            assert_contains "$_f" "    address: http://mautrix-${_b}:${_br_ports[$_b]}" "${_b} → bridge address"
+            assert_contains "$_f" "postgres://synapse:pgpass@postgres/${_b}?sslmode=disable" "${_b} → database URI"
+            assert_contains "$_f" "        \"example.test\": admin"                "${_b} → server admin permission"
+            assert_not_contains "$_f" "\"@admin:example.com\": admin"               "${_b} → placeholder permission removed"
+            assert_contains "$_f" "        example.test: as_token:dptoken"           "${_b} → double puppet secret"
+            assert_not_contains "$_f" "as_token:foobar"                              "${_b} → double puppet placeholder replaced"
+            assert_not_contains "$_f" ": foobar"                                     "${_b} → legacy shared secret placeholder replaced"
+            assert_not_contains "$_f" "hostname: 127.0.0.1"                          "${_b} → listens on all interfaces"
+        done
+        assert_contains "$_br_dir/telegram.yaml" "    api_id: 424242"                "telegram → api_id set"
+        assert_contains "$_br_dir/telegram.yaml" "    api_hash: tghash"              "telegram → api_hash set"
+        assert_not_contains "$_br_dir/discord.yaml" "example.com: https://example.com" "discord → placeholder double puppet server map removed"
+        for _b in "${!_br_images[@]}"; do
+            # The bridge itself must accept the config: a second start writes registration.yaml
+            cp "$_br_dir/$_b.yaml" "$_br_dir/$_b/config.yaml"
+            sudo docker run --rm --user "$(id -u):$(id -g)" -v "$_br_dir/$_b:/data" \
+                "${_br_images[$_b]}" >/dev/null 2>&1 || true
+            [[ -f "$_br_dir/$_b/registration.yaml" ]] \
+                && pass "${_b} → bridge accepts config and generates registration.yaml" \
+                || fail "${_b} → bridge rejected the configured config.yaml"
+        done
+    fi
+    rm -rf "$_br_dir" 2>/dev/null || sudo rm -rf "$_br_dir"
+fi
 
 trap - EXIT
 cleanup_on_exit

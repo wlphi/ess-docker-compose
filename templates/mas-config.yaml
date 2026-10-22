@@ -47,9 +47,9 @@ secrets:
     - kid: "key-1"
       algorithm: rs256
       key: |
-        -----BEGIN RSA PRIVATE KEY-----
+        -----BEGIN PRIVATE KEY-----
         {{MAS_RSA_PRIVATE_KEY}}
-        -----END RSA PRIVATE KEY-----
+        -----END PRIVATE KEY-----
 
 # Matrix homeserver configuration
 matrix:
@@ -73,12 +73,6 @@ account:
   password_recovery_enabled: false
   account_deactivation_allowed: true
 
-# Policy — controls who can register
-policy:
-  data:
-    registration:
-      enabled: false   # true = open registration
-
 # Branding
 branding:
   service_name: "Matrix"
@@ -94,11 +88,6 @@ clients:
       - 'https://{{ELEMENT_DOMAIN}}'
       - 'https://{{ELEMENT_DOMAIN}}/mobile_guide/'
       - 'io.element.app:/callback'
-
-  # Synapse (confidential client)
-  - client_id: '0000000000000000000SYNAPSE'
-    client_auth_method: client_secret_basic
-    client_secret: '{{SYNAPSE_CLIENT_SECRET}}'
 
 # Email configuration (optional)
 # Required for password recovery and email verification.

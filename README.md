@@ -35,8 +35,8 @@ A self-hosted Matrix server stack with modern OIDC authentication, web clients, 
 Always available (start with the stack, set up via `setup-bridges.sh`):
 - [mautrix-whatsapp](https://github.com/mautrix/whatsapp) — WhatsApp bridge (Go megabridge)
 - [mautrix-signal](https://github.com/mautrix/signal) — Signal bridge (Go megabridge)
-- [mautrix-telegram](https://github.com/mautrix/telegram) — Telegram bridge (requires API credentials)
-- [mautrix-discord](https://github.com/mautrix/discord) — Discord bridge (Go megabridge)
+- [mautrix-telegram](https://github.com/mautrix/telegram) — Telegram bridge (Go megabridge, requires API credentials)
+- [mautrix-discord](https://github.com/mautrix/discord) — Discord bridge (legacy mautrix-go bridge)
 - [mautrix-slack](https://github.com/mautrix/slack) — Slack bridge (Go megabridge — Megaslack)
 
 Optional (`--profile hookshot`):
@@ -133,14 +133,14 @@ Required open ports in addition to 80 and 443:
 
 ## Bridges
 
-`setup-bridges.sh` configures WhatsApp, Signal, Discord, and Slack automatically. Telegram requires API credentials from [my.telegram.org](https://my.telegram.org) — add them to `.env` before running:
+`setup-bridges.sh` configures WhatsApp, Signal, Telegram, Discord, and Slack automatically. Telegram requires API credentials from [my.telegram.org](https://my.telegram.org) — add them to `.env` before running:
 
 ```bash
 TELEGRAM_API_ID=your_id
 TELEGRAM_API_HASH=your_hash
 ```
 
-All bridges use Go megabridge implementations (Discord, Slack, WhatsApp, Signal) or the current Python bridge (Telegram). Bridges use double puppet support (messages appear from your actual Matrix user, not a bridge bot) and have encryption disabled for compatibility with MAS.
+WhatsApp, Signal, Telegram, and Slack use the Go megabridge (bridgev2) implementations; Discord still uses the legacy mautrix-go bridge. Bridge images are pinned to release tags (mautrix's `:latest` follows the development branch). Upgrading from the Python Telegram bridge needs an intermediate step — see [BRIDGE_SETUP_GUIDE.md](BRIDGE_SETUP_GUIDE.md#upgrading-from-the-python-telegram-bridge). Bridges use double puppet support (messages appear from your actual Matrix user, not a bridge bot) and have encryption disabled for compatibility with MAS.
 
 See [BRIDGE_SETUP_GUIDE.md](BRIDGE_SETUP_GUIDE.md) for details, including Discord, Slack, and matrix-hookshot setup.
 
@@ -150,11 +150,13 @@ When the `monitoring` profile is enabled, Prometheus scrapes Synapse metrics eve
 - A Prometheus datasource pointing to the internal `prometheus:9090` endpoint
 - The official [Synapse dashboard (ID 10046)](https://grafana.com/grafana/dashboards/10046) downloaded at deploy time
 
+Log in as `admin` with the `GRAFANA_ADMIN_PASSWORD` that `deploy.sh` generates and prints (also stored in `.env`).
+
 Synapse exposes metrics at `:9000/metrics` via a separate `metrics.yaml` config file loaded alongside `homeserver.yaml` (Synapse directory config mode).
 
 ## Database Maintenance
 
-`synapse_auto_compressor` runs continuously alongside Postgres and compresses the `state_groups_state` table — the primary source of Synapse database bloat. It requires no configuration and runs automatically whenever Postgres is healthy.
+`synapse_auto_compressor` runs alongside Postgres and compresses the `state_groups_state` table — the primary source of Synapse database bloat. It processes up to 100 chunks of 500 state groups per run and repeats every hour (set `COMPRESSOR_INTERVAL` in `.env`, in seconds, to change this). It requires no other configuration.
 
 ## Synapse Extensions
 

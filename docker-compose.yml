@@ -6,12 +6,12 @@
 # - Configures all services for production use
 #
 # Deployment Modes:
-# 1. Multi-machine (default): docker compose -f docker-compose.production.yml up -d
+# 1. Multi-machine (default): docker compose -f docker-compose.yml up -d
 #    - Runs: Synapse, MAS, Element, PostgreSQL only
 #    - Caddy and Authelia run on separate machines
-# 2. Single-machine with Authelia: docker compose -f docker-compose.production.yml --profile single-machine --profile authelia up -d
+# 2. Single-machine with Authelia: docker compose -f docker-compose.yml --profile single-machine --profile authelia up -d
 #    - Runs everything on one machine with Caddy + Authelia
-# 3. Single-machine without Authelia: docker compose -f docker-compose.production.yml --profile single-machine up -d
+# 3. Single-machine without Authelia: docker compose -f docker-compose.yml --profile single-machine up -d
 #    - Runs everything on one machine with Caddy, no Authelia
 
 services:
@@ -147,9 +147,9 @@ services:
       postgres:
         condition: service_healthy
 
-  # mautrix-discord Bridge (Go megabridge)
+  # mautrix-discord Bridge (legacy mautrix-go bridge — no bridgev2 release yet)
   mautrix-discord:
-    image: ${DISCORD_IMAGE:-dock.mau.dev/mautrix/discord:latest}
+    image: ${DISCORD_IMAGE:-dock.mau.dev/mautrix/discord:v0.7.7}
     container_name: matrix-bridge-discord
     restart: unless-stopped
     volumes:
@@ -162,7 +162,7 @@ services:
 
   # mautrix-slack Bridge (Go megabridge — Megaslack)
   mautrix-slack:
-    image: ${SLACK_IMAGE:-dock.mau.dev/mautrix/slack:latest}
+    image: ${SLACK_IMAGE:-dock.mau.dev/mautrix/slack:v26.10}
     container_name: matrix-bridge-slack
     restart: unless-stopped
     volumes:
@@ -188,7 +188,9 @@ services:
       synapse:
         condition: service_healthy
 
-  # synapse_auto_compressor — continuously compresses state_groups_state to reduce DB bloat
+  # synapse_auto_compressor — periodically compresses state_groups_state to reduce DB bloat.
+  # Each run processes up to 100 chunks of 500 state groups and exits, so it is
+  # looped with a pause (COMPRESSOR_INTERVAL seconds, default 1 hour).
   synapse-auto-compressor:
     build:
       context: .
@@ -198,13 +200,15 @@ services:
     restart: unless-stopped
     environment:
       RUST_LOG: info
+      COMPRESSOR_DB_URL: postgresql://synapse:${POSTGRES_PASSWORD}@postgres/synapse
+      COMPRESSOR_INTERVAL: ${COMPRESSOR_INTERVAL:-3600}
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - -p
-      - postgresql://synapse:${POSTGRES_PASSWORD}@postgres/synapse
-      - -c
-      - "500"
-      - -n
-      - "100"
+      - |
+        while true; do
+          synapse_auto_compressor -p "$$COMPRESSOR_DB_URL" -c 500 -n 100 || echo "synapse_auto_compressor failed (exit $$?)"
+          sleep "$$COMPRESSOR_INTERVAL"
+        done
     networks:
       - matrix-network
     depends_on:
@@ -239,6 +243,8 @@ services:
     restart: unless-stopped
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Without GRAFANA_ADMIN_PASSWORD Grafana starts with its default admin/admin login
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_SERVER_ROOT_URL: "https://${MONITORING_DOMAIN:-monitoring.localhost}"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
@@ -250,9 +256,9 @@ services:
     depends_on:
       - prometheus
 
-  # mautrix-telegram Bridge
+  # mautrix-telegram Bridge (Go megabridge)
   mautrix-telegram:
-    image: ${TELEGRAM_IMAGE:-dock.mau.dev/mautrix/telegram:latest}
+    image: ${TELEGRAM_IMAGE:-dock.mau.dev/mautrix/telegram:v26.10}
     container_name: matrix-bridge-telegram
     restart: unless-stopped
     volumes:
@@ -265,7 +271,7 @@ services:
 
   # mautrix-whatsapp Bridge
   mautrix-whatsapp:
-    image: ${WHATSAPP_IMAGE:-dock.mau.dev/mautrix/whatsapp:latest}
+    image: ${WHATSAPP_IMAGE:-dock.mau.dev/mautrix/whatsapp:v26.10}
     container_name: matrix-bridge-whatsapp
     restart: unless-stopped
     volumes:
@@ -278,7 +284,7 @@ services:
 
   # mautrix-signal Bridge
   mautrix-signal:
-    image: ${SIGNAL_IMAGE:-dock.mau.dev/mautrix/signal:latest}
+    image: ${SIGNAL_IMAGE:-dock.mau.dev/mautrix/signal:v26.10}
     container_name: matrix-bridge-signal
     restart: unless-stopped
     volumes:
@@ -319,21 +325,25 @@ services:
       - LIVEKIT_URL=wss://${RTC_DOMAIN}/livekit/sfu
       - LIVEKIT_KEY=livekit-key
       - LIVEKIT_SECRET=${LIVEKIT_SECRET}
-      - LIVEKIT_FULL_ACCESS_HOMESERVERS=${MATRIX_DOMAIN}
+      - LIVEKIT_FULL_ACCESS_HOMESERVERS=${SERVER_NAME:-${MATRIX_DOMAIN}}
     networks:
       - matrix-network
     depends_on:
       - livekit
 
   # Element Call frontend — self-hosted web app for video/voice calls
-  # Reads livekit_service_url from .well-known/matrix/client (rtc_foci) automatically.
-  # No extra configuration needed: homeserver details are passed as URL params by Element Web.
+  # Embedded in Element Web, it gets the homeserver from URL params. Opened
+  # directly (standalone), it reads element-call/config.json (written by
+  # deploy.sh / quickstart.sh) and discovers LiveKit via Synapse's
+  # /rtc/transports endpoint (matrix_rtc in homeserver.yaml).
   element-call:
     profiles:
       - element-call
     image: ${ELEMENT_CALL_IMAGE:-ghcr.io/element-hq/element-call:latest}
     container_name: matrix-element-call
     restart: unless-stopped
+    volumes:
+      - ./element-call/config.json:/app/config.json:ro
     ports:
       - "8083:8080"
     networks:
@@ -348,9 +358,6 @@ services:
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
-      AUTHELIA_SESSION_SECRET: ${AUTHELIA_SESSION_SECRET}
-      AUTHELIA_STORAGE_ENCRYPTION_KEY: ${AUTHELIA_STORAGE_ENCRYPTION_KEY}
-      AUTHELIA_JWT_SECRET: ${AUTHELIA_JWT_SECRET}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - ./authelia/config:/config

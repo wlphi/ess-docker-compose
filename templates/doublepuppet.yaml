@@ -26,9 +26,8 @@ namespaces:
 #    cp templates/doublepuppet.yaml appservices/doublepuppet.yaml
 #
 # 4. Update bridge configs with the AS_TOKEN:
-#    WhatsApp:  double_puppet.secrets.<domain>: as_token:<AS_TOKEN>
-#    Signal:    double_puppet.secrets.<domain>: as_token:<AS_TOKEN>
-#    Telegram:  bridge.login_shared_secret_map.<domain>: as_token:<AS_TOKEN>
+#    WhatsApp, Signal, Telegram, Slack: double_puppet.secrets.<domain>: as_token:<AS_TOKEN>
+#    Discord:   bridge.login_shared_secret_map.<domain>: as_token:<AS_TOKEN>
 #
 # 5. Register in Synapse homeserver.yaml:
 #    app_service_config_files:

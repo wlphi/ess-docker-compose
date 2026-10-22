@@ -89,7 +89,6 @@ info "Generating secrets..."
 POSTGRES_PASSWORD=$(gen_secret)
 MAS_SECRET_KEY=$(gen_hex)
 SYNAPSE_SHARED_SECRET=$(gen_secret)
-SYNAPSE_CLIENT_SECRET=$(gen_secret)
 $USE_ELEMENT_CALL && LIVEKIT_SECRET=$(gen_secret) || LIVEKIT_SECRET=""
 ok "Secrets ready"
 
@@ -216,11 +215,6 @@ email:
   port: 25
   mode: plain
 
-policy:
-  data:
-    registration:
-      enabled: ${OPEN_REGISTRATION}
-
 clients:
   - client_id: '01HQW90Z35CMXFJWQPHC3BGZGQ'
     client_auth_method: none
@@ -238,10 +232,6 @@ clients:
       - 'https://${FLUFFYCHAT_DOMAIN}'
       - 'https://${FLUFFYCHAT_DOMAIN}/'
       - 'im.fluffychat://login'
-
-  - client_id: '0000000000000000000SYNAPSE'
-    client_auth_method: client_secret_basic
-    client_secret: '${SYNAPSE_CLIENT_SECRET}'
 EOF
 chmod 755 mas/config
 chmod 644 mas/config/config.yaml
@@ -286,20 +276,35 @@ cat > element/config/config.json << EOF
 EOF
 ok "Element Web config written"
 
+# Element Call frontend config — needed when Element Call is opened directly
+# (standalone). Since v0.24 the image ships no default homeserver.
+if $USE_ELEMENT_CALL; then
+    mkdir -p element-call
+    cat > element-call/config.json << EOF
+{
+    "default_server_config": {
+        "m.homeserver": {
+            "base_url": "https://${MATRIX_DOMAIN}",
+            "server_name": "${MATRIX_DOMAIN}"
+        }
+    },
+    "livekit": {
+        "livekit_service_url": "https://${RTC_DOMAIN}/livekit/jwt"
+    }
+}
+EOF
+    ok "Element Call config written"
+fi
+
 # ── FluffyChat config ─────────────────────────────────────────────────────────
 
 info "Writing FluffyChat config..."
 mkdir -p fluffychat
 cat > fluffychat/config.json << EOF
 {
-    "default_homeserver": "${MATRIX_DOMAIN}",
-    "homeserver_list": [
-        {
-            "name": "${MATRIX_DOMAIN}",
-            "server_url": "https://${MATRIX_DOMAIN}",
-            "isDefault": true
-        }
-    ]
+    "applicationName": "FluffyChat",
+    "defaultHomeserver": "${MATRIX_DOMAIN}",
+    "presetHomeserver": "${MATRIX_DOMAIN}"
 }
 EOF
 ok "FluffyChat config written"
@@ -393,12 +398,14 @@ server_name: "${MATRIX_DOMAIN}"
 pid_file: /data/homeserver.pid
 listeners:
   - port: 8008
+    resources:
+    - compress: false
+      names:
+      - client
+      - federation
     tls: false
     type: http
     x_forwarded: true
-    resources:
-      - names: [client, federation]
-        compress: false
 log_config: "/data/${MATRIX_DOMAIN}.log.config"
 media_store_path: /data/media_store
 report_stats: false
@@ -428,6 +435,7 @@ sed -i '/^matrix_authentication_service:/,/^[^ ]/{ /^matrix_authentication_servi
 sed -i '/^experimental_features:/,/^[^ ]/{ /^experimental_features:/d; /^[^ ]/!d }' synapse/data/homeserver.yaml
 sed -i '/^enable_registration:/d' synapse/data/homeserver.yaml
 sed -i '/^max_event_delay_duration:/d' synapse/data/homeserver.yaml
+sed -i '/^matrix_rtc:/,/^[^ ]/{ /^matrix_rtc:/d; /^[^ ]/!d }' synapse/data/homeserver.yaml
 sed -i '/^rc_delayed_event_mgmt:/,/^[^ ]/{ /^rc_delayed_event_mgmt:/d; /^[^ ]/!d }' synapse/data/homeserver.yaml
 
 cat >> synapse/data/homeserver.yaml << EOF
@@ -459,9 +467,14 @@ if $USE_ELEMENT_CALL; then
     cat >> synapse/data/homeserver.yaml << EOF
 
 experimental_features:
-  msc3266_enabled: true
+  msc4143_enabled: true
+  # state_after in /sync (MSC4222) — stable in Synapse 1.164+, flag needed until then
   msc4222_enabled: true
-  msc4140_enabled: true
+
+matrix_rtc:
+  transports:
+    - type: livekit
+      livekit_service_url: https://${RTC_DOMAIN}/livekit/jwt
 
 max_event_delay_duration: 24h
 
@@ -482,8 +495,9 @@ ok "Synapse config patched"
 # and take down port 8008 (issue #32).
 info "Enabling Synapse Prometheus metrics..."
 sed -i '/# ess-deploy:metrics-listener/,/^  - \|^[^ ]/{ /# ess-deploy:metrics-listener/d; /^  - \|^[^ ]/!d }' synapse/data/homeserver.yaml
-sed -i '/^        compress: false/a\
-\
+# Insert as the first listeners: entry — anchoring inside the client listener
+# breaks whenever `synapse generate` changes its YAML layout.
+sed -i '/^listeners:/a\
   - type: metrics   # ess-deploy:metrics-listener\
     port: 9000\
     bind_addresses: ['"'"'0.0.0.0'"'"']\
